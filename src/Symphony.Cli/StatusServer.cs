@@ -11,6 +11,12 @@ namespace Symphony.Cli;
 /// <summary>OPTIONAL HTTP observability extension (SPEC 13.7). Binds loopback only.</summary>
 public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer> logger) : IAsyncDisposable
 {
+    /// <summary>
+    /// Loopback names only. Binding to 127.0.0.1 does not stop DNS rebinding: a hostile page whose
+    /// domain re-resolves to 127.0.0.1 reaches this server with its own name in the Host header.
+    /// </summary>
+    public static readonly string[] AllowedHosts = ["localhost", "127.0.0.1", "[::1]"];
+
     private WebApplication? _app;
 
     public string? Url { get; private set; }
@@ -20,7 +26,14 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
+        builder.Services.AddHostFiltering(o =>
+        {
+            o.AllowedHosts = AllowedHosts;
+            o.AllowEmptyHosts = false;
+            o.IncludeFailureMessage = false;
+        });
         _app = builder.Build();
+        _app.UseHostFiltering();
 
         _app.MapGet("/", () => Results.Content(Dashboard.Html, "text/html; charset=utf-8"));
         _app.MapGet("/api/v1/state", () => Snapshot(s => Json(StateJson(s))));
