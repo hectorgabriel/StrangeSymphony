@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>symphony</AssemblyName>
+    <RootNamespace>Symphony.Cli</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Symphony.Core\Symphony.Core.csproj" />
+    <ProjectReference Include="..\Symphony.AzureDevOps\Symphony.AzureDevOps.csproj" />
+    <ProjectReference Include="..\Symphony.Claude\Symphony.Claude.csproj" />
+  </ItemGroup>
+
+</Project>

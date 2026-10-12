@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Symphony.AzureDevOps/Symphony.AzureDevOps.csproj" />
+    <Project Path="src/Symphony.Claude/Symphony.Claude.csproj" />
+    <Project Path="src/Symphony.Cli/Symphony.Cli.csproj" />
+    <Project Path="src/Symphony.Core/Symphony.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Symphony.Tests/Symphony.Tests.csproj" />
+  </Folder>
+</Solution>
