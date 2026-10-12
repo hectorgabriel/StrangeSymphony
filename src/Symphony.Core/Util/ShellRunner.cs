@@ -45,12 +45,20 @@ public static class ShellRunner
 
         using var process = new Process { StartInfo = psi };
         var output = new StringBuilder();
+        var truncated = false;
         void Append(string? line)
         {
             if (line is null) return;
             lock (output)
             {
-                if (output.Length < MaxCapturedChars)
+                // Cap while capturing, so one huge line never lands in memory whole.
+                var room = MaxCapturedChars - output.Length;
+                if (line.Length > room)
+                {
+                    output.Append(line, 0, Math.Max(room, 0));
+                    truncated = true;
+                }
+                else
                 {
                     output.AppendLine(line);
                 }
@@ -74,12 +82,12 @@ public static class ShellRunner
         {
             KillTree(process);
             ct.ThrowIfCancellationRequested();
-            return new ShellResult(null, true, Truncate(output));
+            return new ShellResult(null, true, Captured(output, ref truncated));
         }
 
         // Flush async readers.
         process.WaitForExit();
-        return new ShellResult(process.ExitCode, false, Truncate(output));
+        return new ShellResult(process.ExitCode, false, Captured(output, ref truncated));
     }
 
     public static void KillTree(Process process)
@@ -97,12 +105,13 @@ public static class ShellRunner
         }
     }
 
-    private static string Truncate(StringBuilder sb)
+    /// <summary>Captured output, marked whenever anything was dropped.</summary>
+    private static string Captured(StringBuilder sb, ref bool truncated)
     {
         lock (sb)
         {
             var s = sb.ToString().TrimEnd();
-            return s.Length > MaxCapturedChars ? s[..MaxCapturedChars] + "…[truncated]" : s;
+            return truncated ? s + "…[truncated]" : s;
         }
     }
 }
