@@ -34,6 +34,22 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
         });
         _app = builder.Build();
         _app.UseHostFiltering();
+        _app.Use(async (ctx, next) =>
+        {
+            // Host filtering does not stop a hostile page from POSTing a form to 127.0.0.1 (the
+            // Host header is genuine). Browsers always send Origin on such requests; non-browser
+            // clients usually omit it, so only a present, foreign Origin is rejected.
+            var method = ctx.Request.Method;
+            if (!HttpMethods.IsGet(method) && !HttpMethods.IsHead(method)
+                && ctx.Request.Headers.Origin.Count > 0
+                && !IsOwnOrigin(ctx.Request.Headers.Origin.ToString(), ctx.Connection.LocalPort))
+            {
+                await Error(403, "forbidden_origin", "cross-origin requests are not allowed").ExecuteAsync(ctx);
+                return;
+            }
+
+            await next(ctx);
+        });
 
         _app.MapGet("/", () => Results.Content(Dashboard.Html, "text/html; charset=utf-8"));
         _app.MapGet("/api/v1/state", () => Snapshot(s => Json(StateJson(s))));
@@ -57,6 +73,14 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
         Url = _app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
         logger.LogInformation("action=status_server outcome=started url={Url}", Url);
     }
+
+    /// <summary>True for <c>http://&lt;loopback name&gt;:&lt;this server's port&gt;</c>; <c>null</c> and lists are rejected.</summary>
+    public static bool IsOwnOrigin(string origin, int port) =>
+        Uri.TryCreate(origin, UriKind.Absolute, out var uri)
+        && uri.Scheme == Uri.UriSchemeHttp
+        && uri.Port == port
+        && uri.AbsolutePath == "/"
+        && AllowedHosts.Contains(uri.Host, StringComparer.OrdinalIgnoreCase);
 
     private IResult Snapshot(Func<RuntimeSnapshot, IResult> map)
     {
