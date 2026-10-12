@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Symphony.Core.Agents;
 using Symphony.Core.Config;
 using Symphony.Core.Domain;
+using Symphony.Core.Tracker;
 using Symphony.Core.Workflow;
 using Symphony.Core.Workspaces;
 
@@ -44,6 +45,7 @@ public sealed class Orchestrator
         public required int? RetryAttempt { get; init; }
         public required DateTimeOffset StartedAt { get; init; }
         public required CancellationTokenSource Cts { get; init; }
+        public required WorkflowLease Lease { get; init; }
         public Task? Worker { get; set; }
         public string? WorkspacePath { get; set; }
         public string? ProcessId { get; set; }
@@ -117,6 +119,7 @@ public sealed class Orchestrator
     private JsonNode? _rateLimits;
     private ITimer? _tickTimer;
     private int _tickQueued;
+    private int _nextTickMinDelayMs;
     private volatile PublishedState? _published;
 
     public Orchestrator(
@@ -223,7 +226,8 @@ public sealed class Orchestrator
     {
         Interlocked.Exchange(ref _tickQueued, 0);
         _store.ReloadIfChanged();
-        var workflow = _store.Current;
+        using var lease = _store.Acquire();
+        var workflow = lease.Workflow;
         var config = workflow.Config;
 
         try
@@ -243,7 +247,7 @@ public sealed class Orchestrator
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning("action=fetch_candidates outcome=failed reason={Reason}", ex.Message);
+                _logger.LogWarning("action=fetch_candidates outcome=failed reason={Reason} retry_after_ms={RetryAfterMs}", ex.Message, NoteRetryAfter(ex));
                 return;
             }
 
@@ -262,7 +266,9 @@ public sealed class Orchestrator
         }
         finally
         {
-            _tickTimer?.Change(TimeSpan.FromMilliseconds(_store.Current.Config.PollIntervalMs), Timeout.InfiniteTimeSpan);
+            var delayMs = Math.Max(_store.Current.Config.PollIntervalMs, _nextTickMinDelayMs);
+            _nextTickMinDelayMs = 0;
+            _tickTimer?.Change(TimeSpan.FromMilliseconds(delayMs), Timeout.InfiniteTimeSpan);
         }
     }
 
@@ -286,7 +292,7 @@ public sealed class Orchestrator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning("action=reconcile outcome=failed reason={Reason} note=keeping_workers", ex.Message);
+            _logger.LogWarning("action=reconcile outcome=failed reason={Reason} retry_after_ms={RetryAfterMs} note=keeping_workers", ex.Message, NoteRetryAfter(ex));
             return;
         }
 
@@ -385,6 +391,7 @@ public sealed class Orchestrator
             RetryAttempt = attempt,
             StartedAt = _time.GetUtcNow(),
             Cts = new CancellationTokenSource(),
+            Lease = _store.Acquire(workflow),
         };
 
         _running[issue.Id] = entry;
@@ -495,6 +502,7 @@ public sealed class Orchestrator
 
         _running.Remove(m.IssueId);
         entry.Cts.Dispose();
+        entry.Lease.Dispose();
         _endedSeconds += Math.Max(0, (_time.GetUtcNow() - entry.StartedAt).TotalSeconds);
         var issue = entry.Issue;
         var nextAttempt = (entry.RetryAttempt ?? 0) + 1;
@@ -548,10 +556,10 @@ public sealed class Orchestrator
         return (int)Math.Min(delay, maxBackoffMs);
     }
 
-    private void ScheduleRetry(string issueId, int attempt, string identifier, string? url, string? error, bool continuation)
+    private void ScheduleRetry(string issueId, int attempt, string identifier, string? url, string? error, bool continuation, int minDelayMs = 0)
     {
         CancelRetry(issueId);
-        var delayMs = continuation ? ContinuationDelayMs : BackoffMs(attempt, _store.Current.Config.Agent.MaxRetryBackoffMs);
+        var delayMs = Math.Max(minDelayMs, continuation ? ContinuationDelayMs : BackoffMs(attempt, _store.Current.Config.Agent.MaxRetryBackoffMs));
         var token = Guid.NewGuid();
         var timer = _time.CreateTimer(_ => Post(new RetryDueMsg(issueId, token)), null, TimeSpan.FromMilliseconds(delayMs), Timeout.InfiniteTimeSpan);
         _retries[issueId] = new RetryEntry
@@ -587,7 +595,8 @@ public sealed class Orchestrator
 
         _retries.Remove(m.IssueId);
         retry.Timer.Dispose();
-        var workflow = _store.Current;
+        using var lease = _store.Acquire();
+        var workflow = lease.Workflow;
         var config = workflow.Config;
 
         IReadOnlyList<Issue> refreshed;
@@ -597,7 +606,7 @@ public sealed class Orchestrator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            ScheduleRetry(m.IssueId, retry.Attempt + 1, retry.Identifier, retry.Url, $"retry refresh failed: {ex.Message}", continuation: false);
+            ScheduleRetry(m.IssueId, retry.Attempt + 1, retry.Identifier, retry.Url, $"retry refresh failed: {ex.Message}", continuation: false, RetryAfterMs(ex));
             return;
         }
 
@@ -639,6 +648,18 @@ public sealed class Orchestrator
         Dispatch(issue, workflow, retry.Attempt);
     }
 
+    /// <summary>Tracker rate-limit hint (adapter extension, SPEC 11.4); 0 when absent.</summary>
+    private static int RetryAfterMs(Exception ex) =>
+        ex is TrackerException { RetryAfterMs: { } ms } && ms > 0 ? ms : 0;
+
+    /// <summary>Pushes the next scheduled poll out to at least the tracker's Retry-After.</summary>
+    private int NoteRetryAfter(Exception ex)
+    {
+        var ms = RetryAfterMs(ex);
+        _nextTickMinDelayMs = Math.Max(_nextTickMinDelayMs, ms);
+        return ms;
+    }
+
     private void Release(string issueId)
     {
         _claimed.Remove(issueId);
@@ -650,7 +671,8 @@ public sealed class Orchestrator
 
     private async Task StartupTerminalCleanupAsync(CancellationToken ct)
     {
-        var workflow = _store.Current;
+        using var lease = _store.Acquire();
+        var workflow = lease.Workflow;
         try
         {
             var terminal = await workflow.Tracker.FetchIssuesByStatesAsync(workflow.Config.Tracker.TerminalStates, ct);
@@ -700,6 +722,12 @@ public sealed class Orchestrator
         catch (Exception ex)
         {
             _logger.LogWarning("action=shutdown outcome=incomplete reason={Reason}", ex.Message);
+        }
+
+        // Workers still running past the grace period keep their snapshot's adapter.
+        foreach (var entry in _running.Values.Where(e => e.Worker is null || e.Worker.IsCompleted))
+        {
+            entry.Lease.Dispose();
         }
 
         _logger.LogInformation("action=shutdown outcome=completed stopped_workers={Count}", workers.Count);

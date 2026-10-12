@@ -218,7 +218,24 @@ public sealed class ClaudeRunnerTests : IDisposable
                 return JsonNode.Parse(await res.Content.ReadAsStringAsync())!;
             }
 
+            async Task<JsonNode> Raw(string body)
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+                req.Headers.Authorization = AuthenticationHeaderValue.Parse(auth);
+                using var res = await http.SendAsync(req);
+                Assert.Equal(System.Net.HttpStatusCode.OK, res.StatusCode);
+                return JsonNode.Parse(await res.Content.ReadAsStringAsync())!;
+            }
+
             Assert.Equal("symphony-tracker", (await Rpc("initialize", new JsonObject { ["protocolVersion"] = "2025-06-18" }))["result"]!["serverInfo"]!["name"]!.GetValue<string>());
+            Assert.Equal("2025-03-26", (await Rpc("initialize", new JsonObject { ["protocolVersion"] = "2025-03-26" }))["result"]!["protocolVersion"]!.GetValue<string>());
+            Assert.Equal("2025-06-18", (await Rpc("initialize", new JsonObject { ["protocolVersion"] = "1999-01-01" }))["result"]!["protocolVersion"]!.GetValue<string>());
+
+            // Malformed shapes are JSON-RPC errors or tool errors, never HTTP 500s.
+            Assert.Equal(-32600, (await Raw("""{"jsonrpc":"2.0","id":2,"method":5}"""))["error"]!["code"]!.GetValue<int>());
+            Assert.True((await Raw("""{"jsonrpc":"2.0","id":3,"method":"tools/call","params":[1]}"""))["result"]!["isError"]!.GetValue<bool>());
+            Assert.True((await Raw("""{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":7}}"""))["result"]!["isError"]!.GetValue<bool>());
+            Assert.Equal("2025-06-18", (await Raw("""{"jsonrpc":"2.0","id":5,"method":"initialize","params":{"protocolVersion":1}}"""))["result"]!["protocolVersion"]!.GetValue<string>());
             Assert.Equal("echo", (await Rpc("tools/list", null))["result"]!["tools"]![0]!["name"]!.GetValue<string>());
 
             var call = await Rpc("tools/call", new JsonObject { ["name"] = "echo", ["arguments"] = new JsonObject { ["x"] = 1 } });

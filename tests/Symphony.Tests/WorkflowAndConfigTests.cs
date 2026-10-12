@@ -204,4 +204,46 @@ public class WorkflowStoreTests
         var store = new WorkflowStore(tmp.Path, new ConfigBuilder([new FakeTrackerFactory(new FakeTracker())], _ => null), _ => null, NullLoggerFactory.Instance);
         Assert.Throws<WorkflowException>(() => store.LoadInitial());
     }
+
+    [Fact]
+    public void Reload_disposes_the_replaced_adapter_once_its_last_lease_is_released()
+    {
+        using var tmp = new TempWorkflow("tracker: {kind: fake}");
+        var factory = new PerSnapshotTrackerFactory();
+        var store = new WorkflowStore(tmp.Path, new ConfigBuilder([factory], _ => null), _ => null, NullLoggerFactory.Instance);
+        store.LoadInitial();
+        var lease = store.Acquire();
+
+        tmp.Write("tracker: {kind: fake}", "changed body");
+        Assert.True(store.ReloadIfChanged());
+        var (first, second) = (factory.Created[0], factory.Created[1]);
+        Assert.Same(second, store.Current.Tracker);
+        Assert.Equal(0, first.Disposals); // still leased by a running worker
+
+        using (store.Acquire(lease.Workflow))
+        {
+            lease.Dispose();
+            lease.Dispose(); // idempotent
+            Assert.Equal(0, first.Disposals);
+        }
+
+        Assert.Equal(1, first.Disposals);
+        Assert.Equal(0, second.Disposals);
+
+        store.Dispose();
+        Assert.Equal(1, second.Disposals);
+        Assert.Equal(1, first.Disposals);
+    }
+
+    [Fact]
+    public void Reload_keeps_an_adapter_shared_with_the_new_snapshot()
+    {
+        using var tmp = new TempWorkflow("tracker: {kind: fake}");
+        var tracker = new FakeTracker();
+        using var store = tmp.Store(tracker);
+        store.LoadInitial();
+        tmp.Write("tracker: {kind: fake}", "changed body");
+        Assert.True(store.ReloadIfChanged());
+        Assert.Equal(0, tracker.Disposals);
+    }
 }

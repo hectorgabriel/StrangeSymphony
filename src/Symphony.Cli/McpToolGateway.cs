@@ -23,6 +23,9 @@ public sealed class McpToolGateway : IToolGateway, IAsyncDisposable
 {
     private const string ServerName = "symphony-tracker";
 
+    /// <summary>MCP protocol revisions this server speaks, newest first.</summary>
+    private static readonly string[] SupportedProtocolVersions = ["2025-06-18", "2025-03-26", "2024-11-05"];
+
     private sealed record Registration(ITrackerAdapter Tracker, Func<Issue> CurrentIssue, string Identifier, byte[] TokenHash);
 
     private readonly ConcurrentDictionary<string, Registration> _sessions = new();
@@ -112,17 +115,25 @@ public sealed class McpToolGateway : IToolGateway, IAsyncDisposable
     private async Task<JsonObject?> DispatchAsync(JsonObject request, Registration reg, CancellationToken ct)
     {
         var id = request["id"]?.DeepClone();
-        var method = request["method"]?.GetValue<string>();
+        var method = Str(request["method"]);
+        var @params = request["params"] as JsonObject;
         if (id is null)
         {
             return null; // notification
+        }
+
+        if (method is null)
+        {
+            return RpcError(id, -32600, "invalid request: method must be a string");
         }
 
         switch (method)
         {
             case "initialize":
             {
-                var version = request["params"]?["protocolVersion"]?.GetValue<string>() ?? "2025-06-18";
+                // Echo the client's revision when supported; otherwise offer our newest one.
+                var requested = Str(@params?["protocolVersion"]);
+                var version = requested is not null && SupportedProtocolVersions.Contains(requested) ? requested : SupportedProtocolVersions[0];
                 return RpcResult(id, new JsonObject
                 {
                     ["protocolVersion"] = version,
@@ -149,8 +160,8 @@ public sealed class McpToolGateway : IToolGateway, IAsyncDisposable
 
             case "tools/call":
             {
-                var name = request["params"]?["name"]?.GetValue<string>() ?? "";
-                var args = request["params"]?["arguments"] as JsonObject ?? new JsonObject();
+                var name = Str(@params?["name"]) ?? "";
+                var args = @params?["arguments"] as JsonObject ?? new JsonObject();
                 var result = await CallToolAsync(reg, name, args, ct);
                 var text = result.Output?.ToJsonString() ?? "null";
                 var payload = new JsonObject
@@ -196,6 +207,9 @@ public sealed class McpToolGateway : IToolGateway, IAsyncDisposable
             return AgentToolResult.Fail(ex is OperationCanceledException ? "timeout" : "tool_error", ex.Message);
         }
     }
+
+    private static string? Str(JsonNode? node) =>
+        node is JsonValue v && v.TryGetValue(out string? s) ? s : null;
 
     private static JsonObject RpcResult(JsonNode id, JsonObject result) =>
         new() { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = result };

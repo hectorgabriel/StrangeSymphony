@@ -126,11 +126,12 @@ public sealed class AzureDevOpsClient : IDisposable
             var text = await response.Content.ReadAsStringAsync(ct);
             if (response.StatusCode == HttpStatusCode.TooManyRequests)
             {
-                var retryAfter = response.Headers.RetryAfter?.Delta;
+                var header = response.Headers.RetryAfter;
+                var retryAfter = header?.Delta ?? (header?.Date is { } date ? date - DateTimeOffset.UtcNow : null);
                 throw new TrackerException(TrackerErrorCategories.RateLimited, "Azure DevOps rate limit (429)")
                 {
                     ProviderStatus = 429,
-                    RetryAfterMs = retryAfter is { } d ? (int)d.TotalMilliseconds : null,
+                    RetryAfterMs = retryAfter is { } d ? (int)Math.Max(0, d.TotalMilliseconds) : null,
                 };
             }
 

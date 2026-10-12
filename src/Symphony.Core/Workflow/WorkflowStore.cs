@@ -9,9 +9,28 @@ namespace Symphony.Core.Workflow;
 /// <summary>An effective, validated workflow snapshot. Workers bind to one snapshot for their lifetime.</summary>
 public sealed record EffectiveWorkflow(ServiceConfig Config, string PromptTemplate, ITrackerAdapter Tracker, int Version);
 
+/// <summary>Keeps a snapshot's tracker adapter alive until disposed.</summary>
+public sealed class WorkflowLease : IDisposable
+{
+    private WorkflowStore? _store;
+
+    internal WorkflowLease(WorkflowStore store, EffectiveWorkflow workflow)
+    {
+        _store = store;
+        Workflow = workflow;
+    }
+
+    public EffectiveWorkflow Workflow { get; }
+
+    public void Dispose() => Interlocked.Exchange(ref _store, null)?.Release(Workflow);
+}
+
 /// <summary>
 /// Owns WORKFLOW.md loading, file watching and hot reload (SPEC 6.2). Invalid reloads keep the
 /// last known good snapshot and expose <see cref="LastError"/> so dispatch can be gated.
+/// Snapshots are reference counted: the store holds one reference to the current snapshot and
+/// callers take <see cref="WorkflowLease"/>s, so a replaced snapshot's tracker adapter is disposed
+/// once nothing uses it.
 /// </summary>
 public sealed class WorkflowStore : IDisposable
 {
@@ -21,10 +40,12 @@ public sealed class WorkflowStore : IDisposable
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger _logger;
     private readonly Lock _gate = new();
+    private readonly Dictionary<EffectiveWorkflow, int> _refs = new(ReferenceEqualityComparer.Instance);
     private FileSystemWatcher? _watcher;
     private byte[]? _lastHash;
     private EffectiveWorkflow? _current;
     private int _version;
+    private bool _disposed;
 
     public WorkflowStore(string path, ConfigBuilder builder, Func<string, string?> env, ILoggerFactory loggerFactory)
     {
@@ -47,14 +68,81 @@ public sealed class WorkflowStore : IDisposable
     /// <summary>Startup load. Throws <see cref="WorkflowException"/> so the CLI can fail startup.</summary>
     public EffectiveWorkflow LoadInitial()
     {
+        ITrackerAdapter? retired;
+        EffectiveWorkflow snapshot;
         lock (_gate)
         {
-            var (snapshot, hash) = Build();
-            _current = snapshot;
+            (snapshot, var hash) = Build();
+            retired = SetCurrentLocked(snapshot);
             _lastHash = hash;
             LogWarnings(snapshot);
-            return snapshot;
         }
+
+        retired?.Dispose();
+        return snapshot;
+    }
+
+    /// <summary>Leases the current snapshot.</summary>
+    public WorkflowLease Acquire()
+    {
+        lock (_gate)
+        {
+            return AcquireLocked(Current);
+        }
+    }
+
+    /// <summary>Takes another lease on a snapshot the caller already holds a lease on.</summary>
+    public WorkflowLease Acquire(EffectiveWorkflow workflow)
+    {
+        lock (_gate)
+        {
+            if (!_refs.ContainsKey(workflow))
+            {
+                throw new InvalidOperationException($"workflow snapshot {workflow.Version} was already released");
+            }
+
+            return AcquireLocked(workflow);
+        }
+    }
+
+    internal void Release(EffectiveWorkflow workflow)
+    {
+        ITrackerAdapter? retired;
+        lock (_gate)
+        {
+            retired = ReleaseLocked(workflow);
+        }
+
+        retired?.Dispose();
+    }
+
+    private WorkflowLease AcquireLocked(EffectiveWorkflow workflow)
+    {
+        _refs[workflow] = _refs.GetValueOrDefault(workflow) + 1;
+        return new WorkflowLease(this, workflow);
+    }
+
+    /// <summary>Returns the adapter to dispose (outside the lock) when the last reference went away.</summary>
+    private ITrackerAdapter? ReleaseLocked(EffectiveWorkflow workflow)
+    {
+        var count = _refs[workflow] - 1;
+        if (count > 0)
+        {
+            _refs[workflow] = count;
+            return null;
+        }
+
+        _refs.Remove(workflow);
+        // A factory may hand the same adapter to several snapshots; keep it while any is alive.
+        return _refs.Keys.Any(w => ReferenceEquals(w.Tracker, workflow.Tracker)) ? null : workflow.Tracker;
+    }
+
+    private ITrackerAdapter? SetCurrentLocked(EffectiveWorkflow snapshot)
+    {
+        var previous = _current;
+        AcquireLocked(snapshot);
+        _current = snapshot;
+        return previous is null ? null : ReleaseLocked(previous);
     }
 
     public void StartWatching()
@@ -77,8 +165,14 @@ public sealed class WorkflowStore : IDisposable
     /// </summary>
     public bool ReloadIfChanged()
     {
+        ITrackerAdapter? retired;
         lock (_gate)
         {
+            if (_disposed)
+            {
+                return false;
+            }
+
             byte[] hash;
             try
             {
@@ -100,7 +194,7 @@ public sealed class WorkflowStore : IDisposable
             try
             {
                 var (snapshot, _) = Build();
-                _current = snapshot;
+                retired = SetCurrentLocked(snapshot);
                 if (LastError is not null)
                 {
                     _logger.LogInformation("action=workflow_reload outcome=recovered path={Path}", _path);
@@ -117,6 +211,7 @@ public sealed class WorkflowStore : IDisposable
             }
         }
 
+        retired?.Dispose();
         Reloaded?.Invoke(Current);
         return true;
     }
@@ -159,5 +254,25 @@ public sealed class WorkflowStore : IDisposable
         }
     }
 
-    public void Dispose() => _watcher?.Dispose();
+    /// <summary>Stops watching and drops the store's reference; outstanding leases keep their adapters.</summary>
+    public void Dispose()
+    {
+        _watcher?.Dispose();
+        ITrackerAdapter? retired = null;
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            if (_current is not null)
+            {
+                retired = ReleaseLocked(_current);
+            }
+        }
+
+        retired?.Dispose();
+    }
 }

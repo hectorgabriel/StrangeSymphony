@@ -2,6 +2,8 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Symphony.Core.Agents;
+using Symphony.Core.Config;
+using Symphony.Core.Tracker;
 using Symphony.Core.Domain;
 using Symphony.Core.Orchestration;
 using Symphony.Core.Workflow;
@@ -31,10 +33,12 @@ public sealed class OrchestratorHarness : IAsyncDisposable
     private readonly CancellationTokenSource _stop = new();
     private Task? _run;
 
-    public OrchestratorHarness(string extraYaml = "")
+    public OrchestratorHarness(string extraYaml = "", ITrackerAdapterFactory? factory = null)
     {
         Tmp = new TempWorkflow(Yaml(extraYaml));
-        Store = Tmp.Store(Tracker);
+        Store = factory is null
+            ? Tmp.Store(Tracker)
+            : new WorkflowStore(Tmp.Path, new ConfigBuilder([factory], _ => null), _ => null, NullLoggerFactory.Instance);
         Store.LoadInitial();
         Orchestrator = new Orchestrator(Store, new WorkspaceManager(NullLogger<WorkspaceManager>.Instance), RunWorker, Time, NullLogger<Orchestrator>.Instance);
     }
@@ -371,5 +375,61 @@ public class OrchestratorTests
         h.Time.Advance(TimeSpan.FromSeconds(30));
         Assert.Equal(30, h.Snap.Totals.SecondsRunning, precision: 0);
         Assert.Equal("running", h.Snap.Issues["WI-1"].Status);
+    }
+
+    [Fact]
+    public async Task Running_worker_keeps_its_snapshot_adapter_until_it_exits()
+    {
+        var factory = new PerSnapshotTrackerFactory(t => t.Put(TestIssues.Make("1")));
+        await using var h = new OrchestratorHarness(factory: factory);
+        h.Start();
+        await Wait.Until(() => h.Workers.Length == 1, "dispatch");
+        var first = factory.Created[0];
+
+        h.Tmp.Write(OrchestratorHarness.Yaml(""), "changed body");
+        Assert.True(h.Store.ReloadIfChanged());
+        await Task.Delay(100);
+        Assert.Equal(0, first.Disposals);
+
+        h.Workers[0].Succeed();
+        await Wait.Until(() => first.Disposals == 1, "old adapter disposed after worker exit");
+        Assert.Equal(0, factory.Created[1].Disposals);
+    }
+
+    [Fact]
+    public async Task Rate_limited_retry_refresh_waits_for_retry_after()
+    {
+        await using var h = new OrchestratorHarness();
+        h.Tracker.Put(TestIssues.Make("1"));
+        h.Start();
+        await Wait.Until(() => h.Workers.Length == 1, "dispatch");
+        h.Workers[0].Fail("boom");
+        await Wait.Until(() => h.Snap.Retrying.Count == 1, "retry queued");
+
+        h.Tracker.RetryAfterMs = 120000;
+        h.Tracker.FailIdFetches = true;
+        h.Time.Advance(TimeSpan.FromSeconds(10));
+        await Wait.Until(() => h.Snap.Retrying.SingleOrDefault()?.Attempt == 2, "retry rescheduled");
+        // Backoff for attempt 2 is 20 s; Retry-After wins.
+        Assert.Equal(h.Time.GetUtcNow().AddSeconds(120), h.Snap.Retrying[0].DueAt);
+    }
+
+    [Fact]
+    public async Task Rate_limited_poll_defers_the_next_tick_until_retry_after()
+    {
+        await using var h = new OrchestratorHarness(); // poll interval 600 s
+        h.Tracker.RetryAfterMs = 900000;
+        h.Tracker.FailStateFetches = true;
+        h.Start();
+        // Fetch 1 is startup terminal cleanup, fetch 2 the first tick.
+        await Wait.Until(() => h.Tracker.StateFetches == 2, "first tick");
+        await Task.Delay(50);
+
+        h.Time.Advance(TimeSpan.FromSeconds(600));
+        await Task.Delay(100);
+        Assert.Equal(2, h.Tracker.StateFetches);
+
+        h.Time.Advance(TimeSpan.FromSeconds(300));
+        await Wait.Until(() => h.Tracker.StateFetches == 3, "deferred tick");
     }
 }

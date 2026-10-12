@@ -17,14 +17,21 @@ public sealed class FakeTracker : ITrackerAdapter
     public int IdFetches;
     public bool FailIdFetches { get; set; }
     public bool FailStateFetches { get; set; }
+    /// <summary>When set, failures are rate limits carrying this Retry-After.</summary>
+    public int? RetryAfterMs { get; set; }
+    public int Disposals;
     public List<(string Tool, JsonObject Args, string IssueId)> ToolCalls { get; } = [];
 
     public void Put(Issue issue) => Issues[issue.Id] = issue;
 
+    private TrackerException Failure() => RetryAfterMs is { } ms
+        ? new TrackerException(TrackerErrorCategories.RateLimited, "slow down") { RetryAfterMs = ms }
+        : new TrackerException(TrackerErrorCategories.Request, "boom");
+
     public Task<IReadOnlyList<Issue>> FetchIssuesByStatesAsync(IReadOnlyList<string> stateNames, CancellationToken ct)
     {
         Interlocked.Increment(ref StateFetches);
-        if (FailStateFetches) throw new TrackerException(TrackerErrorCategories.Request, "boom");
+        if (FailStateFetches) throw Failure();
         var states = stateNames.Select(StateNames.Normalize).ToHashSet();
         return Task.FromResult<IReadOnlyList<Issue>>(Issues.Values.Where(i => states.Contains(StateNames.Normalize(i.State))).ToList());
     }
@@ -32,7 +39,7 @@ public sealed class FakeTracker : ITrackerAdapter
     public Task<IReadOnlyList<Issue>> FetchIssuesByIdsAsync(IReadOnlyCollection<string> issueIds, CancellationToken ct)
     {
         Interlocked.Increment(ref IdFetches);
-        if (FailIdFetches) throw new TrackerException(TrackerErrorCategories.Request, "boom");
+        if (FailIdFetches) throw Failure();
         return Task.FromResult<IReadOnlyList<Issue>>(issueIds.Where(Issues.ContainsKey).Select(id => Issues[id]).ToList());
     }
 
@@ -49,9 +56,7 @@ public sealed class FakeTracker : ITrackerAdapter
             : AgentToolResult.Fail("unsupported_tool", name));
     }
 
-    public void Dispose()
-    {
-    }
+    public void Dispose() => Interlocked.Increment(ref Disposals);
 }
 
 public sealed class FakeTrackerFactory(FakeTracker tracker) : ITrackerAdapterFactory
@@ -68,6 +73,26 @@ public sealed class FakeTrackerFactory(FakeTracker tracker) : ITrackerAdapterFac
     }
 
     public ITrackerAdapter Create(TrackerSettings settings, Func<string, string?> env, ILoggerFactory loggerFactory) => tracker;
+}
+
+/// <summary>Creates a new adapter per snapshot, like real factories do.</summary>
+public sealed class PerSnapshotTrackerFactory(Action<FakeTracker>? seed = null) : ITrackerAdapterFactory
+{
+    public List<FakeTracker> Created { get; } = [];
+    public string Kind => "fake";
+    public TrackerStateDefaults StateDefaults { get; } = new(["Todo", "In Progress"], ["Done", "Cancelled"]);
+
+    public void ValidateProvider(IReadOnlyDictionary<string, object?> provider, Func<string, string?> env)
+    {
+    }
+
+    public ITrackerAdapter Create(TrackerSettings settings, Func<string, string?> env, ILoggerFactory loggerFactory)
+    {
+        var tracker = new FakeTracker();
+        seed?.Invoke(tracker);
+        lock (Created) Created.Add(tracker);
+        return tracker;
+    }
 }
 
 /// <summary>Temp directory with a WORKFLOW.md, cleaned up on dispose.</summary>

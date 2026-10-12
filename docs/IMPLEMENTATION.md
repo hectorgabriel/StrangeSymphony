@@ -54,6 +54,8 @@ Symphony **never reads, stores or forwards Claude credentials.** It runs the unm
 - **`after_create` failure:** the partly created directory is removed. Reused workspaces are never reset.
 - **Invalid `WORKFLOW.md` reload:** the last good config stays in effect for reconciliation, retries and running sessions. *New dispatches are paused* until the file is fixed (§5.5). The error shows in logs and in `workflow_error` in the API.
 - **Workflow reload:** triggered by the file watcher and by a content-hash check before every tick. A successful reload starts an immediate tick.
+- **Tracker adapter lifetime:** each reload builds a new adapter. Running workers keep the snapshot they started with, and a replaced adapter is disposed when the last worker using it exits.
+- **Tracker rate limits:** when a tracker error carries a retry-after hint (Azure DevOps `Retry-After` on 429), the next scheduled poll and any failed retry refresh wait at least that long. A manual `/api/v1/refresh` still runs immediately.
 - **Retry dispatch while the workflow is invalid:** the issue is requeued with the error `workflow invalid; dispatch blocked`.
 - **Reconciliation stop:** the worker is cancelled. Its claim stays (marked `stopping`) until the process exits, so the same issue can't be dispatched twice into one workspace. Terminal issues have their workspace cleaned only after the worker exits.
 - **Stalled sessions:** killed, then retried with failure backoff (`error = stalled: ...`).

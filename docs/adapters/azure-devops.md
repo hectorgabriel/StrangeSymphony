@@ -107,6 +107,6 @@ Every adapter error is a `Symphony.Core.Tracker.TrackerException` with a `Catego
 | PAT missing or empty | `missing_tracker_secret` |
 | DNS, connect, TLS or timeout failure | `tracker_request` |
 | 401, 403, an HTML response with status 203 (Azure DevOps's sign-in page, which means a bad PAT), or any other non-2xx status | `tracker_status` |
-| 429 | `tracker_rate_limited` (includes `RetryAfterMs` when `Retry-After` is set) |
+| 429 | `tracker_rate_limited` (includes `RetryAfterMs` when `Retry-After` is set, in seconds or as a date; the orchestrator delays the next poll and retry by at least that much) |
 | Invalid JSON, or an unexpected payload shape or malformed refresh record | `tracker_response` |
 | WIQL keyset paging didn't advance | `tracker_pagination` |
