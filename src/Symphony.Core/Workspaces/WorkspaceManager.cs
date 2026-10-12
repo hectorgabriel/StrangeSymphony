@@ -42,7 +42,7 @@ public static class WorkspaceKeys
 /// <summary>Per-issue workspace lifecycle and hooks (SPEC 9).</summary>
 public sealed class WorkspaceManager(ILogger<WorkspaceManager> logger)
 {
-    public string PathFor(string workspaceRoot, string identifier)
+    public static string PathFor(string workspaceRoot, string identifier)
     {
         var root = Path.GetFullPath(workspaceRoot);
         var path = Path.GetFullPath(Path.Combine(root, WorkspaceKeys.For(identifier)));

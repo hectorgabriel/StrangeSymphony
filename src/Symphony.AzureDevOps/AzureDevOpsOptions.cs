@@ -96,7 +96,7 @@ public sealed record AzureDevOpsOptions
             ? v as string ?? Convert.ToString(v, CultureInfo.InvariantCulture)
             : null;
 
-    private static IReadOnlyList<string> List(IReadOnlyDictionary<string, object?> map, string key)
+    private static List<string> List(IReadOnlyDictionary<string, object?> map, string key)
     {
         if (!map.TryGetValue(key, out var v) || v is null) return [];
         if (v is not List<object?> list) throw Invalid($"tracker.provider.{key} must be a list of strings");

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using Microsoft.Extensions.Logging.Abstractions;
 using Symphony.Cli;
@@ -55,7 +56,7 @@ public class StatusServerTests
 
         using var http = new HttpClient();
         using var post = new HttpRequestMessage(HttpMethod.Post, new Uri(url, "/api/v1/refresh"));
-        if (origin is not null) post.Headers.TryAddWithoutValidation("Origin", origin.Replace("{PORT}", url.Port.ToString()));
+        if (origin is not null) post.Headers.TryAddWithoutValidation("Origin", origin.Replace("{PORT}", url.Port.ToString(CultureInfo.InvariantCulture)));
         using var res = await http.SendAsync(post);
         Assert.Equal(expected, res.StatusCode);
 

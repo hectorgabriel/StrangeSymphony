@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -71,11 +72,11 @@ public sealed class FakeAzureDevOps : HttpMessageHandler
             return new HttpResponseMessage(HttpStatusCode.NonAuthoritativeInformation) { Content = new StringContent("<html>sign in</html>", Encoding.UTF8, "text/html") };
         }
 
-        if (path.EndsWith("/_apis/wit/wiql"))
+        if (path.EndsWith("/_apis/wit/wiql", StringComparison.Ordinal))
         {
             var query = JsonNode.Parse(body!)!["query"]!.GetValue<string>();
-            var top = int.Parse(System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query)["$top"]!);
-            var after = int.Parse(System.Text.RegularExpressions.Regex.Match(query, @"\[System\.Id\] > (\d+)").Groups[1].Value);
+            var top = int.Parse(System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query)["$top"]!, CultureInfo.InvariantCulture);
+            var after = int.Parse(System.Text.RegularExpressions.Regex.Match(query, @"\[System\.Id\] > (\d+)").Groups[1].Value, CultureInfo.InvariantCulture);
             var states = System.Text.RegularExpressions.Regex.Match(query, @"\[System\.State\] IN \(([^)]*)\)").Groups[1].Value
                 .Split(',').Select(s => s.Trim().Trim('\'').ToLowerInvariant()).ToHashSet();
             var ids = Items.Values
@@ -88,7 +89,7 @@ public sealed class FakeAzureDevOps : HttpMessageHandler
             return Json(new JsonObject { ["workItems"] = new JsonArray(ids.Select(i => (JsonNode)new JsonObject { ["id"] = i }).ToArray()) });
         }
 
-        if (path.EndsWith("/_apis/wit/workitemsbatch"))
+        if (path.EndsWith("/_apis/wit/workitemsbatch", StringComparison.Ordinal))
         {
             var req = JsonNode.Parse(body!)!;
             var ids = req["ids"]!.AsArray().Select(n => n!.GetValue<int>());
@@ -97,14 +98,14 @@ public sealed class FakeAzureDevOps : HttpMessageHandler
             return Json(new JsonObject { ["count"] = value.Length, ["value"] = new JsonArray(value) });
         }
 
-        if (path.EndsWith("/_apis/connectionData"))
+        if (path.EndsWith("/_apis/connectionData", StringComparison.Ordinal))
         {
             return Json(new JsonObject { ["authenticatedUser"] = new JsonObject { ["id"] = MeId } });
         }
 
         if (request.Method == HttpMethod.Patch && path.Contains("/_apis/wit/workitems/"))
         {
-            var id = int.Parse(path.Split('/').Last());
+            var id = int.Parse(path.Split('/').Last(), CultureInfo.InvariantCulture);
             var item = Items[id];
             foreach (var op in JsonNode.Parse(body!)!.AsArray())
             {
@@ -166,7 +167,7 @@ public class AzureDevOpsAdapterTests
         Assert.True(five.Dispatchable);
         Assert.Equal("https://dev.azure.com/org/Proj/_workitems/edit/5", five.Url);
         Assert.Equal("Do the thing now\n\n- one\n- two", five.Description);
-        Assert.Equal(DateTimeOffset.Parse("2025-01-02T03:04:05Z"), five.CreatedAt);
+        Assert.Equal(DateTimeOffset.Parse("2025-01-02T03:04:05Z", CultureInfo.InvariantCulture), five.CreatedAt);
         Assert.Equal(5, five.NativeRef!["work_item_id"]!.GetValue<int>());
         Assert.Equal("Task", five.NativeRef["work_item_type"]!.GetValue<string>());
     }

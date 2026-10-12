@@ -1,8 +1,14 @@
 <Project>
   <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <WarningsAsErrors>nullable</WarningsAsErrors>
+
+    <!-- .NET analyzers at the recommended set, plus the code-style rules named in .editorconfig.
+         Rules that don't fit this codebase are turned off there, with the reason. -->
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 </Project>

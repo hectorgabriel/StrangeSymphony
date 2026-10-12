@@ -205,7 +205,7 @@ public sealed partial class ConfigBuilder(IEnumerable<ITrackerAdapterFactory> fa
 
     private static string? NullIfBlank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
 
-    private static IReadOnlyList<string>? StringList(IReadOnlyDictionary<string, object?> map, string field, string key)
+    private static List<string>? StringList(IReadOnlyDictionary<string, object?> map, string field, string key)
     {
         if (!map.TryGetValue(key, out var v) || v is null) return null;
         if (v is not List<object?> list) throw Invalid(field, "must be a list of strings");

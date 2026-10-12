@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -140,7 +141,7 @@ public sealed class ClaudeCodeSession : IAgentSession
 
     internal Issue CurrentIssue { get; private set; }
 
-    private string? Pid => _process?.Id.ToString();
+    private string? Pid => _process?.Id.ToString(CultureInfo.InvariantCulture);
 
     internal Task StartAsync(ProcessStartInfo psi, string sessionId, ToolEndpoint? endpoint, string? mcpConfigPath, CancellationToken ct)
     {
@@ -160,8 +161,9 @@ public sealed class ClaudeCodeSession : IAgentSession
         }
 
         _process = process;
-        _stdoutPump = Task.Run(() => PumpStdoutAsync(process));
-        _stderrPump = Task.Run(() => PumpStderrAsync(process));
+        // The pumps outlive the start call's token; they end when the process's streams close.
+        _stdoutPump = Task.Run(() => PumpStdoutAsync(process), CancellationToken.None);
+        _stderrPump = Task.Run(() => PumpStderrAsync(process), CancellationToken.None);
 
         _onEvent(new AgentEvent(AgentEventNames.SessionStarted, DateTimeOffset.UtcNow)
         {
@@ -311,7 +313,7 @@ public sealed class ClaudeCodeSession : IAgentSession
             {
                 ProcessId = Pid,
                 ThreadId = ThreadId,
-                TurnId = _turn.ToString(),
+                TurnId = _turn.ToString(CultureInfo.InvariantCulture),
                 Message = denials > 0 ? $"{Truncate(text)} [permission denials: {denials}]" : Truncate(text),
                 AbsoluteTotals = totals,
             });
@@ -323,7 +325,7 @@ public sealed class ClaudeCodeSession : IAgentSession
         {
             ProcessId = Pid,
             ThreadId = ThreadId,
-            TurnId = _turn.ToString(),
+            TurnId = _turn.ToString(CultureInfo.InvariantCulture),
             Message = reason,
             AbsoluteTotals = totals,
         });
@@ -410,7 +412,7 @@ public sealed class ClaudeCodeSession : IAgentSession
             tail = _stderrTail.ToString().Trim();
         }
 
-        var code = _process is { HasExited: true } p ? p.ExitCode.ToString() : "unknown";
+        var code = _process is { HasExited: true } p ? p.ExitCode.ToString(CultureInfo.InvariantCulture) : "unknown";
         return $"agent process exited (code {code}){(tail.Length > 0 ? $": {Truncate(tail)}" : "")}";
     }
 

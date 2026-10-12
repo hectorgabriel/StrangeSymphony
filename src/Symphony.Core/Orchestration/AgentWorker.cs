@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Symphony.Core.Agents;
 using Symphony.Core.Domain;
@@ -94,7 +95,7 @@ public sealed class AgentWorker(WorkspaceManager workspaces, IAgentSessionFactor
                 throw new WorkerFailedException($"prompt error: {ex.Message}", ex);
             }
 
-            onEvent(new AgentEvent(AgentEventNames.TurnStarted, DateTimeOffset.UtcNow) { TurnId = turn.ToString(), Message = $"turn {turn}/{maxTurns}" });
+            onEvent(new AgentEvent(AgentEventNames.TurnStarted, DateTimeOffset.UtcNow) { TurnId = turn.ToString(CultureInfo.InvariantCulture), Message = $"turn {turn}/{maxTurns}" });
             try
             {
                 await session.RunTurnAsync(prompt, issue, ct);

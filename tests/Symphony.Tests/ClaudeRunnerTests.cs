@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -10,7 +11,11 @@ using Symphony.Core.Workflow;
 
 namespace Symphony.Tests;
 
-/// <summary>Drives ClaudeCodeSession against a fake `claude` that speaks the stream-json protocol.</summary>
+/// <summary>
+/// Drives ClaudeCodeSession against a fake `claude` that speaks the stream-json protocol. The fake
+/// is a bash script, so these tests are POSIX-only.
+/// </summary>
+[UnsupportedOSPlatform("windows")]
 public sealed class ClaudeRunnerTests : IDisposable
 {
     private const string FakeClaude = """

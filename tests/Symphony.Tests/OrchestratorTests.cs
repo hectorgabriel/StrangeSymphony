@@ -1,11 +1,12 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Symphony.Core.Agents;
 using Symphony.Core.Config;
-using Symphony.Core.Tracker;
 using Symphony.Core.Domain;
 using Symphony.Core.Orchestration;
+using Symphony.Core.Tracker;
 using Symphony.Core.Workflow;
 using Symphony.Core.Workspaces;
 
@@ -26,7 +27,7 @@ public sealed class OrchestratorHarness : IAsyncDisposable
 
     public TempWorkflow Tmp { get; }
     public FakeTracker Tracker { get; } = new();
-    public FakeTimeProvider Time { get; } = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+    public FakeTimeProvider Time { get; } = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture));
     public WorkflowStore Store { get; }
     public Orchestrator Orchestrator { get; }
     public ConcurrentQueue<WorkerControl> Dispatches { get; } = new();
@@ -79,7 +80,7 @@ public sealed class OrchestratorHarness : IAsyncDisposable
 
 public class OrchestratorTests
 {
-    private static readonly DateTimeOffset T0 = DateTimeOffset.Parse("2025-01-01T00:00:00Z");
+    private static readonly DateTimeOffset T0 = DateTimeOffset.Parse("2025-01-01T00:00:00Z", CultureInfo.InvariantCulture);
 
     [Fact]
     public void Backoff_is_10s_exponential_and_capped()
