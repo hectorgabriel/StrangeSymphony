@@ -100,6 +100,8 @@ public sealed class Orchestrator
         public string? WorkspacePath { get; set; }
         public int RestartCount { get; set; }
         public string? LastError { get; set; }
+        public int CleanExitsInState { get; set; }
+        public string? CleanExitState { get; set; }
         public Queue<RecentEvent> Events { get; } = new();
     }
 
@@ -639,7 +641,7 @@ public sealed class Orchestrator
             _completed.Add(issue.Id);
             _logger.LogInformation("action=worker_exit outcome=completed issue_id={IssueId} issue_identifier={IssueIdentifier} session_id={SessionId}",
                 issue.Id, issue.Identifier, entry.SessionId);
-            ScheduleRetry(issue.Id, 1, issue.Identifier, issue.Url, error: null, continuation: true);
+            ScheduleContinuation(issue);
         }
         else
         {
@@ -658,6 +660,30 @@ public sealed class Orchestrator
         var exp = Math.Clamp(attempt - 1, 0, 30);
         var delay = 10000d * Math.Pow(2, exp);
         return (int)Math.Min(delay, maxBackoffMs);
+    }
+
+    /// <summary>
+    /// SPEC 7.1 continuation after a clean exit. Sessions that keep ending with the issue in the same
+    /// state make no tracker progress, so past <c>agent.max_fast_continuations</c> they back off.
+    /// </summary>
+    private void ScheduleContinuation(Issue issue)
+    {
+        var track = Track(issue);
+        var state = StateNames.Normalize(issue.State);
+        track.CleanExitsInState = track.CleanExitState == state ? track.CleanExitsInState + 1 : 1;
+        track.CleanExitState = state;
+
+        var agent = _store.Current.Config.Agent;
+        var slowed = track.CleanExitsInState - agent.MaxFastContinuations;
+        if (slowed <= 0)
+        {
+            ScheduleRetry(issue.Id, 1, issue.Identifier, issue.Url, error: null, continuation: true);
+            return;
+        }
+
+        ScheduleRetry(issue.Id, 1, issue.Identifier, issue.Url,
+            $"no state change after {track.CleanExitsInState} sessions in {issue.State}; backing off",
+            continuation: true, BackoffMs(slowed, agent.MaxRetryBackoffMs));
     }
 
     private void ScheduleRetry(string issueId, int attempt, string identifier, string? url, string? error, bool continuation, int minDelayMs = 0)

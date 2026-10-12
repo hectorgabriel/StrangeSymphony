@@ -95,7 +95,8 @@ public sealed partial class ConfigBuilder(IEnumerable<ITrackerAdapterFactory> fa
             Int(agent, "agent.max_concurrent_agents", "max_concurrent_agents", 10, min: 1),
             Int(agent, "agent.max_turns", "max_turns", 20, min: 1),
             Int(agent, "agent.max_retry_backoff_ms", "max_retry_backoff_ms", 300000, min: 1),
-            ByStateLimits(agent));
+            ByStateLimits(agent),
+            Int(agent, "agent.max_fast_continuations", "max_fast_continuations", 3, min: 0));
 
         // claude
         var claude = Section(root, "claude");

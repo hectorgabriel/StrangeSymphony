@@ -38,6 +38,8 @@ agent:
   max_concurrent_agents: 2
   max_turns: 20
   max_retry_backoff_ms: 300000
+  # Sessions that end with the issue in the same state retry after 1 s this many times, then back off.
+  max_fast_continuations: 3
 
 claude:
   command: claude

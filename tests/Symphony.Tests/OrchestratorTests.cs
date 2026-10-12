@@ -167,6 +167,58 @@ public class OrchestratorTests
     }
 
     [Fact]
+    public async Task Continuations_back_off_after_max_fast_continuations_in_the_same_state()
+    {
+        await using var h = new OrchestratorHarness("agent:\n  max_fast_continuations: 2");
+        h.Tracker.Put(TestIssues.Make("1"));
+        h.Start();
+        await Wait.Until(() => h.Workers.Length == 1, "dispatch");
+
+        for (var run = 1; run <= 2; run++)
+        {
+            h.Workers[run - 1].Succeed();
+            await Wait.Until(() => h.Snap.Retrying.Count == 1, $"continuation {run}");
+            Assert.Null(h.Snap.Retrying[0].Error);
+            Assert.Equal(h.Time.GetUtcNow().AddSeconds(1), h.Snap.Retrying[0].DueAt);
+            h.Time.Advance(TimeSpan.FromSeconds(1));
+            await Wait.Until(() => h.Workers.Length == run + 1, $"re-dispatch {run}");
+        }
+
+        h.Workers[2].Succeed();
+        await Wait.Until(() => h.Snap.Retrying.Count == 1, "slowed continuation");
+        var slowed = h.Snap.Retrying[0];
+        Assert.Equal(1, slowed.Attempt);
+        Assert.Contains("no state change after 3 sessions", slowed.Error);
+        Assert.Equal(h.Time.GetUtcNow().AddSeconds(10), slowed.DueAt);
+
+        h.Time.Advance(TimeSpan.FromSeconds(10));
+        await Wait.Until(() => h.Workers.Length == 4, "slowed re-dispatch");
+        h.Workers[3].Succeed();
+        await Wait.Until(() => h.Snap.Retrying.Count == 1, "second slowed continuation");
+        Assert.Equal(h.Time.GetUtcNow().AddSeconds(20), h.Snap.Retrying[0].DueAt);
+    }
+
+    [Fact]
+    public async Task A_state_change_resets_the_continuation_backoff()
+    {
+        await using var h = new OrchestratorHarness("agent:\n  max_fast_continuations: 1");
+        h.Tracker.Put(TestIssues.Make("1"));
+        h.Start();
+        await Wait.Until(() => h.Workers.Length == 1, "dispatch");
+
+        h.Workers[0].Succeed();
+        await Wait.Until(() => h.Snap.Retrying.Count == 1, "continuation");
+        h.Tracker.Put(TestIssues.Make("1", state: "In Progress"));
+        h.Time.Advance(TimeSpan.FromSeconds(1));
+        await Wait.Until(() => h.Workers.Length == 2, "re-dispatch in new state");
+
+        h.Workers[1].Succeed();
+        await Wait.Until(() => h.Snap.Retrying.Count == 1, "continuation after state change");
+        Assert.Null(h.Snap.Retrying[0].Error);
+        Assert.Equal(h.Time.GetUtcNow().AddSeconds(1), h.Snap.Retrying[0].DueAt);
+    }
+
+    [Fact]
     public async Task Failures_retry_with_exponential_backoff()
     {
         await using var h = new OrchestratorHarness();

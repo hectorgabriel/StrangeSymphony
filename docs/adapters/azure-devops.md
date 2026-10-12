@@ -83,7 +83,7 @@ These tools are served to Claude Code as the MCP server `tracker`, so the agent 
 |---|---|---|---|
 | `get_work_item` | no | `{comment_count?: 0..50}` (default 10) | Fields, tags, description, relations and recent comments |
 | `add_comment` | yes | `{text}` (Markdown) | `{comment_id, work_item_id}` |
-| `update_state` | yes | `{state, reason?}` | `{work_item_id, state, rev}`. Fails if the process rules don't allow the transition. |
+| `update_state` | yes | `{state, reason?}` | `{work_item_id, state, rev}`. Fails if the process rules don't allow the transition. `reason` must be one of the process's Reason values; if Azure DevOps rejects the call with a reason, it is retried once without it and the result adds `reason_ignored` with the error. |
 | `add_link` | yes | `{url, comment?}`, where `url` must be http(s) | `{work_item_id, url}` (adds a `Hyperlink` relation) |
 
 **Errors.** A failed tool returns a structured result, `isError: true` with `{error: {category, message}}`, and the session keeps going. The categories are:

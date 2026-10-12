@@ -18,7 +18,8 @@ public sealed record AgentSettings(
     int MaxConcurrentAgents,
     int MaxTurns,
     int MaxRetryBackoffMs,
-    IReadOnlyDictionary<string, int> MaxConcurrentAgentsByState);
+    IReadOnlyDictionary<string, int> MaxConcurrentAgentsByState,
+    int MaxFastContinuations);
 
 /// <summary>
 /// Claude Code runner settings (front matter key <c>claude</c>). This replaces the SPEC's

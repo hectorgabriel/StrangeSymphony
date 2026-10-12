@@ -60,6 +60,7 @@ Symphony **never reads, stores or forwards Claude credentials.** It runs the unm
 - **Retry dispatch while the workflow is invalid:** the issue is requeued with the error `workflow invalid; dispatch blocked`.
 - **Reconciliation stop:** the worker is cancelled. Its claim stays (marked `stopping`) until the process exits, so the same issue can't be dispatched twice into one workspace. Terminal issues have their workspace cleaned only after the worker exits.
 - **Stalled sessions:** killed, then retried with failure backoff (`error = stalled: ...`).
+- **Continuations without progress (`agent.max_fast_continuations`, default `3`):** the spec retries a clean worker exit after 1 s, which loops forever when an agent keeps ending its session without moving the issue. After that many back-to-back clean exits with the issue in the same state, later continuations wait `min(10000 * 2^(n - 1), agent.max_retry_backoff_ms)` instead, with `error = no state change after N sessions in <state>; backing off`. A state change resets the count. `attempt` stays `1`.
 - **Prompt engine:** Scriban in Liquid mode with `StrictVariables`. Unknown variables, unknown members and unknown filters all fail rendering. Template syntax is checked when the workflow loads (`template_parse_error`).
 - **Retry kind:** not exposed to templates. `attempt` is 1-based for both continuations and failure retries (§12.3).
 - **Logging:** `key=value` lines on stdout through `Microsoft.Extensions.Logging` simple console, with UTC timestamps.

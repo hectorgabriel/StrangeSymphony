@@ -33,11 +33,15 @@ public static class AzureDevOpsTools
             }, "text"),
             Mutates: true),
         new(UpdateState,
-            "Move the current work item to another workflow state (for example 'Resolved' or 'Done'). Fails if the process does not allow the transition.",
+            "Move the current work item to another workflow state (for example 'Resolved' or 'Done'). Fails if the process does not allow the transition. Explain the change with add_comment, not with reason.",
             Schema(new JsonObject
             {
                 ["state"] = new JsonObject { ["type"] = "string", ["minLength"] = 1 },
-                ["reason"] = new JsonObject { ["type"] = "string", ["description"] = "Optional state reason." },
+                ["reason"] = new JsonObject
+                {
+                    ["type"] = "string",
+                    ["description"] = "Optional value for the Reason field. It must be one of the reasons the process defines for this transition (for example 'Code complete and unit tests pass'); free text is rejected. Omit it to use the default reason.",
+                },
             }, "state"),
             Mutates: true),
         new(AddLink,
@@ -124,19 +128,33 @@ public static class AzureDevOpsTools
                         return AgentToolResult.Fail("invalid_arguments", "state is required");
                     }
 
-                    var patch = new JsonArray(new JsonObject { ["op"] = "add", ["path"] = "/fields/System.State", ["value"] = state.Trim() });
-                    if (StrArg(args, "reason") is { Length: > 0 } reason)
+                    var reason = StrArg(args, "reason") is { Length: > 0 } r ? r : null;
+                    string? reasonError = null;
+                    JsonNode? updated;
+                    try
                     {
-                        patch.Add(new JsonObject { ["op"] = "add", ["path"] = "/fields/System.Reason", ["value"] = reason });
+                        updated = await client.PatchWorkItemAsync(id, StatePatch(state.Trim(), reason), ct);
+                    }
+                    catch (TrackerException ex) when (reason is not null && ex.ProviderStatus == 400)
+                    {
+                        // Agents often pass a sentence as the reason. The state change is what matters, so
+                        // retry with the process's default reason and report why the given one was dropped.
+                        reasonError = ex.Message;
+                        updated = await client.PatchWorkItemAsync(id, StatePatch(state.Trim(), reason: null), ct);
                     }
 
-                    var updated = await client.PatchWorkItemAsync(id, patch, ct);
-                    return new AgentToolResult(true, new JsonObject
+                    var output = new JsonObject
                     {
                         ["work_item_id"] = id,
                         ["state"] = WorkItemNormalizer.Str(updated?["fields"]?["System.State"]) ?? state,
                         ["rev"] = updated?["rev"]?.DeepClone(),
-                    });
+                    };
+                    if (reasonError is not null)
+                    {
+                        output["reason_ignored"] = reasonError;
+                    }
+
+                    return new AgentToolResult(true, output);
                 }
 
                 case AddLink:
@@ -166,6 +184,17 @@ public static class AzureDevOpsTools
         {
             return AgentToolResult.Fail(ex.Category, ex.Message);
         }
+    }
+
+    private static JsonArray StatePatch(string state, string? reason)
+    {
+        var patch = new JsonArray(new JsonObject { ["op"] = "add", ["path"] = "/fields/System.State", ["value"] = state });
+        if (reason is not null)
+        {
+            patch.Add(new JsonObject { ["op"] = "add", ["path"] = "/fields/System.Reason", ["value"] = reason });
+        }
+
+        return patch;
     }
 
     private static JsonObject Schema(JsonObject properties, params string[] required)

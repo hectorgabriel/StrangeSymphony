@@ -71,6 +71,7 @@ public class ConfigBuilderTests
         Assert.Equal(10, c.Agent.MaxConcurrentAgents);
         Assert.Equal(20, c.Agent.MaxTurns);
         Assert.Equal(300000, c.Agent.MaxRetryBackoffMs);
+        Assert.Equal(3, c.Agent.MaxFastContinuations);
         Assert.Equal("claude", c.Claude.Command);
         Assert.Equal(3600000, c.Claude.TurnTimeoutMs);
         Assert.Equal(5000, c.Claude.ReadTimeoutMs);

@@ -16,6 +16,7 @@ public sealed class FakeAzureDevOps : HttpMessageHandler
     public List<(HttpMethod Method, string Path, string? Body)> Requests { get; } = [];
     public HttpStatusCode? ForceStatus { get; set; }
     public bool ForceHtml { get; set; }
+    public bool RejectReasons { get; set; }
     public string MeId { get; set; } = "me-guid";
 
     public static JsonObject Item(int id, string state, string? title = "Title", string project = "Proj", string type = "Task",
@@ -107,7 +108,16 @@ public sealed class FakeAzureDevOps : HttpMessageHandler
         {
             var id = int.Parse(path.Split('/').Last(), CultureInfo.InvariantCulture);
             var item = Items[id];
-            foreach (var op in JsonNode.Parse(body!)!.AsArray())
+            var ops = JsonNode.Parse(body!)!.AsArray();
+            if (RejectReasons && ops.Any(op => op!["path"]!.GetValue<string>() == "/fields/System.Reason"))
+            {
+                return new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent("{\"message\":\"The field 'Reason' contains a value that is not in the list of supported values\"}", Encoding.UTF8, "application/json"),
+                };
+            }
+
+            foreach (var op in ops)
             {
                 if (op!["path"]!.GetValue<string>() == "/fields/System.State")
                 {
@@ -358,6 +368,40 @@ public class AzureDevOpsAdapterTests
         var result = await adapter.ExecuteAgentToolAsync(AzureDevOpsTools.UpdateState, new JsonObject { ["state"] = "Nope" }, issue, default);
         Assert.False(result.Success);
         Assert.Equal(TrackerErrorCategories.Status, result.Output!["error"]!["category"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Update_state_drops_a_rejected_reason_and_still_moves_the_item()
+    {
+        var (adapter, fake) = Create();
+        fake.Items[4] = FakeAzureDevOps.Item(4, "Doing");
+        var issue = (await adapter.FetchIssuesByIdsAsync(["4"], default))[0];
+        fake.RejectReasons = true;
+
+        var result = await adapter.ExecuteAgentToolAsync(AzureDevOpsTools.UpdateState, new JsonObject { ["state"] = "Done", ["reason"] = "All gates pass" }, issue, default);
+
+        Assert.True(result.Success);
+        Assert.Equal("Done", fake.Items[4]["fields"]!["System.State"]!.GetValue<string>());
+        Assert.Contains("Reason", result.Output!["reason_ignored"]!.GetValue<string>());
+        var patches = fake.Requests.Where(r => r.Method == HttpMethod.Patch).ToList();
+        Assert.Equal(2, patches.Count);
+        Assert.Contains("System.Reason", patches[0].Body);
+        Assert.DoesNotContain("System.Reason", patches[1].Body);
+    }
+
+    [Fact]
+    public async Task Update_state_reports_the_state_error_when_the_retry_without_reason_also_fails()
+    {
+        var (adapter, fake) = Create();
+        fake.Items[4] = FakeAzureDevOps.Item(4, "Doing");
+        var issue = (await adapter.FetchIssuesByIdsAsync(["4"], default))[0];
+        fake.ForceStatus = HttpStatusCode.BadRequest;
+
+        var result = await adapter.ExecuteAgentToolAsync(AzureDevOpsTools.UpdateState, new JsonObject { ["state"] = "Nope", ["reason"] = "x" }, issue, default);
+
+        Assert.False(result.Success);
+        Assert.Equal(TrackerErrorCategories.Status, result.Output!["error"]!["category"]!.GetValue<string>());
+        Assert.Equal(2, fake.Requests.Count(r => r.Method == HttpMethod.Patch));
     }
 
     private sealed record BlockerRefView(string? Id, string? Identifier, string? State)
