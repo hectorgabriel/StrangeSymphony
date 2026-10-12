@@ -20,6 +20,8 @@ public sealed class FakeTracker : ITrackerAdapter
     /// <summary>When set, failures are rate limits carrying this Retry-After.</summary>
     public int? RetryAfterMs { get; set; }
     public int Disposals;
+    /// <summary>One-shot: the next id fetch captures its result, then waits for this gate.</summary>
+    public TaskCompletionSource? NextIdFetchGate;
     public List<(string Tool, JsonObject Args, string IssueId)> ToolCalls { get; } = [];
 
     public void Put(Issue issue) => Issues[issue.Id] = issue;
@@ -36,11 +38,17 @@ public sealed class FakeTracker : ITrackerAdapter
         return Task.FromResult<IReadOnlyList<Issue>>(Issues.Values.Where(i => states.Contains(StateNames.Normalize(i.State))).ToList());
     }
 
-    public Task<IReadOnlyList<Issue>> FetchIssuesByIdsAsync(IReadOnlyCollection<string> issueIds, CancellationToken ct)
+    public async Task<IReadOnlyList<Issue>> FetchIssuesByIdsAsync(IReadOnlyCollection<string> issueIds, CancellationToken ct)
     {
         Interlocked.Increment(ref IdFetches);
         if (FailIdFetches) throw Failure();
-        return Task.FromResult<IReadOnlyList<Issue>>(issueIds.Where(Issues.ContainsKey).Select(id => Issues[id]).ToList());
+        var result = issueIds.Where(Issues.ContainsKey).Select(id => Issues[id]).ToList();
+        if (Interlocked.Exchange(ref NextIdFetchGate, null) is { } gate)
+        {
+            await gate.Task.WaitAsync(ct);
+        }
+
+        return result;
     }
 
     public IReadOnlyList<AgentToolSpec> AgentToolSpecs() =>

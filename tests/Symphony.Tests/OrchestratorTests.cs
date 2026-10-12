@@ -432,4 +432,67 @@ public class OrchestratorTests
         h.Time.Advance(TimeSpan.FromSeconds(300));
         await Wait.Until(() => h.Tracker.StateFetches == 3, "deferred tick");
     }
+
+    [Fact]
+    public async Task Slow_tracker_does_not_block_the_loop_and_refreshes_coalesce()
+    {
+        await using var h = new OrchestratorHarness();
+        h.Tracker.Put(TestIssues.Make("1"));
+        h.Start();
+        await Wait.Until(() => h.Workers.Length == 1, "dispatch");
+
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Tracker.Put(TestIssues.Make("1", state: "Done"));
+        h.Tracker.NextIdFetchGate = gate;
+        var ids = h.Tracker.IdFetches;
+        h.Orchestrator.RequestRefresh();
+        await Wait.Until(() => h.Tracker.IdFetches > ids, "reconcile fetch started");
+
+        // The loop keeps applying worker events while the tracker hangs.
+        h.Workers[0].Emit(new AgentEvent(AgentEventNames.Notification, h.Time.GetUtcNow()) { Message = "still alive" });
+        await Wait.Until(() => h.Snap.Running.SingleOrDefault()?.LastMessage == "still alive", "event applied during fetch");
+
+        var states = h.Tracker.StateFetches;
+        h.Orchestrator.RequestRefresh();
+        await Task.Delay(50);
+        h.Orchestrator.RequestRefresh();
+        await Task.Delay(50);
+        Assert.Equal(states, h.Tracker.StateFetches);
+
+        gate.SetResult();
+        await Wait.Until(() => h.Workers[0].Token.IsCancellationRequested, "reconcile applied when the fetch lands");
+        // The in-flight tick's candidate fetch plus exactly one coalesced follow-up tick.
+        await Wait.Until(() => h.Tracker.StateFetches == states + 2, "follow-up tick");
+        await Task.Delay(100);
+        Assert.Equal(states + 2, h.Tracker.StateFetches);
+    }
+
+    [Fact]
+    public async Task Stale_reconcile_result_does_not_touch_a_newer_run()
+    {
+        await using var h = new OrchestratorHarness();
+        h.Tracker.Put(TestIssues.Make("1"));
+        h.Start();
+        await Wait.Until(() => h.Workers.Length == 1, "dispatch");
+
+        // Run A's reconcile fetch sees "Done" but is slow to land.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Tracker.Put(TestIssues.Make("1", state: "Done"));
+        h.Tracker.NextIdFetchGate = gate;
+        var ids = h.Tracker.IdFetches;
+        h.Orchestrator.RequestRefresh();
+        await Wait.Until(() => h.Tracker.IdFetches > ids, "reconcile fetch started");
+
+        // Meanwhile the issue is reopened, run A exits and the continuation retry starts run B.
+        h.Tracker.Put(TestIssues.Make("1"));
+        h.Workers[0].Succeed();
+        await Wait.Until(() => h.Snap.Retrying.Count == 1, "continuation queued");
+        h.Time.Advance(TimeSpan.FromSeconds(1));
+        await Wait.Until(() => h.Workers.Length == 2, "run B dispatched");
+
+        gate.SetResult();
+        await Task.Delay(150);
+        Assert.False(h.Workers[1].Token.IsCancellationRequested);
+        Assert.Null(Assert.Single(h.Snap.Running).Stopping);
+    }
 }

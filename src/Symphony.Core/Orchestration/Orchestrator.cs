@@ -12,7 +12,8 @@ namespace Symphony.Core.Orchestration;
 
 /// <summary>
 /// Single-authority scheduler (SPEC 7, 8, 16). All state mutations happen on one message loop;
-/// workers, timers and the HTTP surface only post messages.
+/// workers, timers and the HTTP surface only post messages. The loop never awaits tracker I/O:
+/// tick and retry reads run as background fetches whose results come back as messages.
 /// </summary>
 public sealed class Orchestrator
 {
@@ -33,6 +34,21 @@ public sealed class Orchestrator
     private sealed record AgentUpdateMsg(string IssueId, Guid RunId, AgentEvent Event) : Msg;
     private sealed record WorkspaceMsg(string IssueId, Guid RunId, string Path) : Msg;
     private sealed record RetryDueMsg(string IssueId, Guid Token) : Msg;
+    private sealed record TickFetchedMsg(TickFetch Fetch) : Msg;
+    private sealed record RetryFetchedMsg(RetryEntry Retry, WorkflowLease Lease, IReadOnlyList<Issue>? Refreshed, Exception? Error) : Msg;
+
+    /// <summary>One tick's tracker reads, gathered off the loop. Owns the snapshot lease until applied.</summary>
+    private sealed class TickFetch
+    {
+        public required WorkflowLease Lease { get; init; }
+        /// <summary>Issue id -> run id of the live runs at tick start; results only apply to those runs.</summary>
+        public required IReadOnlyDictionary<string, Guid> Runs { get; init; }
+        public required bool DispatchBlocked { get; init; }
+        public IReadOnlyList<Issue>? Refreshed { get; set; }
+        public Exception? RefreshError { get; set; }
+        public IReadOnlyList<Issue>? Candidates { get; set; }
+        public Exception? CandidatesError { get; set; }
+    }
 
     private enum StopKind { Release, Stalled, Shutdown }
 
@@ -112,6 +128,7 @@ public sealed class Orchestrator
     private readonly HashSet<string> _completed = new();
     private readonly Dictionary<string, IssueTrack> _tracks = new();
     private readonly List<Task> _cleanups = new();
+    private readonly List<Task> _fetches = new();
     private long _inputTokens;
     private long _outputTokens;
     private long _totalTokens;
@@ -120,6 +137,8 @@ public sealed class Orchestrator
     private ITimer? _tickTimer;
     private int _tickQueued;
     private int _nextTickMinDelayMs;
+    private bool _tickInFlight;
+    private bool _tickAgain;
     private volatile PublishedState? _published;
 
     public Orchestrator(
@@ -153,11 +172,7 @@ public sealed class Orchestrator
             {
                 try
                 {
-                    await HandleAsync(msg, stoppingToken);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    break;
+                    Handle(msg, stoppingToken);
                 }
                 catch (Exception ex)
                 {
@@ -202,56 +217,134 @@ public sealed class Orchestrator
             p.Issues);
     }
 
-    private Task HandleAsync(Msg msg, CancellationToken ct) => msg switch
+    private void Handle(Msg msg, CancellationToken ct)
     {
-        TickMsg => OnTickAsync(ct),
-        WorkerExitedMsg m => Sync(() => OnWorkerExited(m)),
-        AgentUpdateMsg m => Sync(() => OnAgentUpdate(m)),
-        WorkspaceMsg m => Sync(() => OnWorkspace(m)),
-        RetryDueMsg m => OnRetryDueAsync(m, ct),
-        _ => Task.CompletedTask,
-    };
-
-    private static Task Sync(Action action)
-    {
-        action();
-        return Task.CompletedTask;
+        switch (msg)
+        {
+            case TickMsg: OnTick(ct); break;
+            case TickFetchedMsg m: OnTickFetched(m); break;
+            case WorkerExitedMsg m: OnWorkerExited(m); break;
+            case AgentUpdateMsg m: OnAgentUpdate(m); break;
+            case WorkspaceMsg m: OnWorkspace(m); break;
+            case RetryDueMsg m: OnRetryDue(m, ct); break;
+            case RetryFetchedMsg m: OnRetryFetched(m); break;
+        }
     }
 
     private void Post(Msg msg) => _inbox.Writer.TryWrite(msg);
 
+    /// <summary>Hands a fetch result to the loop; after shutdown nobody will apply it, so release its lease.</summary>
+    private void PostOrRelease(Msg msg, WorkflowLease lease)
+    {
+        if (!_inbox.Writer.TryWrite(msg))
+        {
+            lease.Dispose();
+        }
+    }
+
+    private void StartFetch(Func<Task> fetch)
+    {
+        _fetches.RemoveAll(t => t.IsCompleted);
+        _fetches.Add(Task.Run(fetch));
+    }
+
     // ---- Tick (SPEC 8.1, 16.2) -------------------------------------------------------------
 
-    private async Task OnTickAsync(CancellationToken ct)
+    private void OnTick(CancellationToken ct)
     {
         Interlocked.Exchange(ref _tickQueued, 0);
+        if (_tickInFlight)
+        {
+            // Run one more tick once the current fetch lands (coalesced, SPEC 13.7.2).
+            _tickAgain = true;
+            return;
+        }
+
         _store.ReloadIfChanged();
-        using var lease = _store.Acquire();
+        var lease = _store.Acquire();
+        try
+        {
+            ReconcileStalled(lease.Workflow.Config);
+
+            var error = _store.LastError;
+            if (error is not null)
+            {
+                _logger.LogError("action=dispatch outcome=skipped reason=invalid_workflow code={Code} error={Error}", error.Code, error.Message);
+            }
+
+            var fetch = new TickFetch
+            {
+                Lease = lease,
+                Runs = _running.Values.Where(e => e.Stop is null).ToDictionary(e => e.Issue.Id, e => e.RunId),
+                DispatchBlocked = error is not null,
+            };
+            StartFetch(() => FetchForTickAsync(fetch, ct));
+            _tickInFlight = true;
+        }
+        catch
+        {
+            // No fetch will land to re-arm the timer; keep polling alive.
+            lease.Dispose();
+            ArmTickTimer();
+            throw;
+        }
+    }
+
+    /// <summary>Runs off the loop. Reconcile refresh first, then candidates, as in SPEC 16.2.</summary>
+    private async Task FetchForTickAsync(TickFetch fetch, CancellationToken ct)
+    {
+        var workflow = fetch.Lease.Workflow;
+        if (fetch.Runs.Count > 0)
+        {
+            try
+            {
+                fetch.Refreshed = await workflow.Tracker.FetchIssuesByIdsAsync(fetch.Runs.Keys.ToList(), ct);
+            }
+            catch (Exception ex)
+            {
+                fetch.RefreshError = ex;
+            }
+        }
+
+        if (!fetch.DispatchBlocked && !ct.IsCancellationRequested)
+        {
+            try
+            {
+                fetch.Candidates = await workflow.Tracker.FetchIssuesByStatesAsync(workflow.Config.Tracker.ActiveStates, ct);
+            }
+            catch (Exception ex)
+            {
+                fetch.CandidatesError = ex;
+            }
+        }
+
+        PostOrRelease(new TickFetchedMsg(fetch), fetch.Lease);
+    }
+
+    private void OnTickFetched(TickFetchedMsg m)
+    {
+        var fetch = m.Fetch;
+        using var lease = fetch.Lease;
+        _tickInFlight = false;
         var workflow = lease.Workflow;
         var config = workflow.Config;
 
         try
         {
-            await ReconcileAsync(workflow, ct);
+            ApplyReconcile(fetch, config);
 
-            if (_store.LastError is { } error)
+            if (fetch.DispatchBlocked || _store.LastError is not null)
             {
-                _logger.LogError("action=dispatch outcome=skipped reason=invalid_workflow code={Code} error={Error}", error.Code, error.Message);
                 return;
             }
 
-            IReadOnlyList<Issue> issues;
-            try
-            {
-                issues = await workflow.Tracker.FetchIssuesByStatesAsync(config.Tracker.ActiveStates, ct);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            if (fetch.CandidatesError is { } ex)
             {
                 _logger.LogWarning("action=fetch_candidates outcome=failed reason={Reason} retry_after_ms={RetryAfterMs}", ex.Message, NoteRetryAfter(ex));
                 return;
             }
 
-            foreach (var issue in Eligibility.SortForDispatch(issues))
+            foreach (var issue in Eligibility.SortForDispatch(fetch.Candidates ?? []))
             {
                 if (AvailableSlots(config) <= 0)
                 {
@@ -266,33 +359,34 @@ public sealed class Orchestrator
         }
         finally
         {
-            var delayMs = Math.Max(_store.Current.Config.PollIntervalMs, _nextTickMinDelayMs);
-            _nextTickMinDelayMs = 0;
-            _tickTimer?.Change(TimeSpan.FromMilliseconds(delayMs), Timeout.InfiniteTimeSpan);
+            ArmTickTimer();
+            if (_tickAgain)
+            {
+                _tickAgain = false;
+                RequestRefresh();
+            }
         }
+    }
+
+    private void ArmTickTimer()
+    {
+        var delayMs = Math.Max(_store.Current.Config.PollIntervalMs, _nextTickMinDelayMs);
+        _nextTickMinDelayMs = 0;
+        _tickTimer?.Change(TimeSpan.FromMilliseconds(delayMs), Timeout.InfiniteTimeSpan);
     }
 
     // ---- Reconciliation (SPEC 8.5, 16.3) -----------------------------------------------------
 
-    private async Task ReconcileAsync(EffectiveWorkflow workflow, CancellationToken ct)
+    private void ApplyReconcile(TickFetch fetch, ServiceConfig config)
     {
-        var config = workflow.Config;
-        ReconcileStalled(config);
-
-        var ids = _running.Values.Where(e => e.Stop is null).Select(e => e.Issue.Id).ToList();
-        if (ids.Count == 0)
+        if (fetch.RefreshError is { } ex)
         {
+            _logger.LogWarning("action=reconcile outcome=failed reason={Reason} retry_after_ms={RetryAfterMs} note=keeping_workers", ex.Message, NoteRetryAfter(ex));
             return;
         }
 
-        IReadOnlyList<Issue> refreshed;
-        try
+        if (fetch.Refreshed is not { } refreshed)
         {
-            refreshed = await workflow.Tracker.FetchIssuesByIdsAsync(ids, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning("action=reconcile outcome=failed reason={Reason} retry_after_ms={RetryAfterMs} note=keeping_workers", ex.Message, NoteRetryAfter(ex));
             return;
         }
 
@@ -300,34 +394,44 @@ public sealed class Orchestrator
         foreach (var issue in refreshed)
         {
             returned.Add(issue.Id);
-            if (!_running.TryGetValue(issue.Id, out var entry) || entry.Stop is not null)
+            if (!TryGetFetchedRun(fetch, issue.Id, out var entry))
             {
                 continue;
             }
 
+            entry.Issue = issue;
             if (config.IsTerminalState(issue.State))
             {
-                entry.Issue = issue;
                 Terminate(entry, cleanupWorkspace: true, $"terminal_state:{issue.State}");
             }
-            else if (config.IsActiveState(issue.State) && Eligibility.IsRoutable(issue, config))
+            else if (!config.IsActiveState(issue.State) || !Eligibility.IsRoutable(issue, config))
             {
-                entry.Issue = issue;
-            }
-            else
-            {
-                entry.Issue = issue;
                 Terminate(entry, cleanupWorkspace: false, $"not_active_or_unroutable:{issue.State}");
             }
         }
 
-        foreach (var missing in ids.Where(id => !returned.Contains(id)))
+        foreach (var missing in fetch.Runs.Keys.Where(id => !returned.Contains(id)))
         {
-            if (_running.TryGetValue(missing, out var entry) && entry.Stop is null)
+            if (TryGetFetchedRun(fetch, missing, out var entry))
             {
                 Terminate(entry, cleanupWorkspace: false, "not_visible");
             }
         }
+    }
+
+    /// <summary>The still-live run the fetch was made for; a newer run of the same issue is left alone.</summary>
+    private bool TryGetFetchedRun(TickFetch fetch, string issueId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out RunningEntry? entry)
+    {
+        if (fetch.Runs.TryGetValue(issueId, out var runId)
+            && _running.TryGetValue(issueId, out entry)
+            && entry.RunId == runId
+            && entry.Stop is null)
+        {
+            return true;
+        }
+
+        entry = null;
+        return false;
     }
 
     private void ReconcileStalled(ServiceConfig config)
@@ -586,35 +690,56 @@ public sealed class Orchestrator
         }
     }
 
-    private async Task OnRetryDueAsync(RetryDueMsg m, CancellationToken ct)
+    private void OnRetryDue(RetryDueMsg m, CancellationToken ct)
     {
         if (!_retries.TryGetValue(m.IssueId, out var retry) || retry.Token != m.Token)
         {
             return;
         }
 
+        // The claim stays while the refresh is in flight, so ticks will not dispatch the issue.
         _retries.Remove(m.IssueId);
         retry.Timer.Dispose();
-        using var lease = _store.Acquire();
+        var lease = _store.Acquire();
+        StartFetch(async () =>
+        {
+            IReadOnlyList<Issue>? refreshed = null;
+            Exception? error = null;
+            try
+            {
+                refreshed = await lease.Workflow.Tracker.FetchIssuesByIdsAsync([retry.IssueId], ct);
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+            }
+
+            PostOrRelease(new RetryFetchedMsg(retry, lease, refreshed, error), lease);
+        });
+    }
+
+    private void OnRetryFetched(RetryFetchedMsg m)
+    {
+        using var lease = m.Lease;
+        var retry = m.Retry;
         var workflow = lease.Workflow;
         var config = workflow.Config;
-
-        IReadOnlyList<Issue> refreshed;
-        try
+        if (!_claimed.Contains(retry.IssueId) || _running.ContainsKey(retry.IssueId) || _retries.ContainsKey(retry.IssueId))
         {
-            refreshed = await workflow.Tracker.FetchIssuesByIdsAsync([m.IssueId], ct);
+            return; // released or taken over while the refresh was in flight
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+
+        if (m.Error is { } ex)
         {
-            ScheduleRetry(m.IssueId, retry.Attempt + 1, retry.Identifier, retry.Url, $"retry refresh failed: {ex.Message}", continuation: false, RetryAfterMs(ex));
+            ScheduleRetry(retry.IssueId, retry.Attempt + 1, retry.Identifier, retry.Url, $"retry refresh failed: {ex.Message}", continuation: false, RetryAfterMs(ex));
             return;
         }
 
-        var issue = refreshed.FirstOrDefault(i => i.Id == m.IssueId);
+        var issue = m.Refreshed!.FirstOrDefault(i => i.Id == retry.IssueId);
         if (issue is null)
         {
-            _logger.LogInformation("action=retry outcome=released issue_id={IssueId} issue_identifier={IssueIdentifier} reason=not_visible", m.IssueId, retry.Identifier);
-            Release(m.IssueId);
+            _logger.LogInformation("action=retry outcome=released issue_id={IssueId} issue_identifier={IssueIdentifier} reason=not_visible", retry.IssueId, retry.Identifier);
+            Release(retry.IssueId);
             return;
         }
 
@@ -700,6 +825,8 @@ public sealed class Orchestrator
 
     private async Task ShutdownAsync()
     {
+        // Late worker and fetch posts now fail; fetches release their own leases (PostOrRelease).
+        _inbox.Writer.TryComplete();
         _tickTimer?.Dispose();
         foreach (var retry in _retries.Values)
         {
@@ -717,11 +844,18 @@ public sealed class Orchestrator
         var grace = TimeSpan.FromMilliseconds(_store.Current.Config.Hooks.TimeoutMs + 15000);
         try
         {
-            await Task.WhenAll(workers.Concat(_cleanups)).WaitAsync(grace);
+            await Task.WhenAll(workers.Concat(_cleanups).Concat(_fetches)).WaitAsync(grace);
         }
         catch (Exception ex)
         {
             _logger.LogWarning("action=shutdown outcome=incomplete reason={Reason}", ex.Message);
+        }
+
+        // Fetch results that arrived after the loop stopped still own leases.
+        while (_inbox.Reader.TryRead(out var pending))
+        {
+            if (pending is TickFetchedMsg t) t.Fetch.Lease.Dispose();
+            else if (pending is RetryFetchedMsg r) r.Lease.Dispose();
         }
 
         // Workers still running past the grace period keep their snapshot's adapter.
