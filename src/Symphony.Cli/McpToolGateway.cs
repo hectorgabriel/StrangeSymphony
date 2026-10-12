@@ -187,25 +187,48 @@ public sealed class McpToolGateway : IToolGateway, IAsyncDisposable
         var issue = reg.CurrentIssue();
         if (!reg.Tracker.AgentToolSpecs().Any(s => s.Name == name))
         {
-            _logger.LogWarning("action=tool_call tool={Tool} outcome=unsupported issue_id={IssueId} issue_identifier={IssueIdentifier}", name, issue.Id, issue.Identifier);
+            _logger.LogWarning("action=tool_call tool={Tool} outcome=unsupported issue_id={IssueId} issue_identifier={IssueIdentifier} category={Category}",
+                name, issue.Id, issue.Identifier, "unsupported_tool");
             return AgentToolResult.Fail("unsupported_tool", $"unsupported tool: {name}");
         }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(60));
+        AgentToolResult result;
         try
         {
-            var result = await reg.Tracker.ExecuteAgentToolAsync(name, args, issue, timeout.Token);
-            _logger.LogInformation("action=tool_call tool={Tool} outcome={Outcome} issue_id={IssueId} issue_identifier={IssueIdentifier}",
-                name, result.Success ? "completed" : "failed", issue.Id, issue.Identifier);
-            return result;
+            result = await reg.Tracker.ExecuteAgentToolAsync(name, args, issue, timeout.Token);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning("action=tool_call tool={Tool} outcome=failed issue_id={IssueId} issue_identifier={IssueIdentifier} reason={Reason}",
-                name, issue.Id, issue.Identifier, ex.Message);
-            return AgentToolResult.Fail(ex is OperationCanceledException ? "timeout" : "tool_error", ex.Message);
+            result = AgentToolResult.Fail(ex is OperationCanceledException ? "timeout" : "tool_error", ex.Message);
         }
+
+        if (result.Success)
+        {
+            _logger.LogInformation("action=tool_call tool={Tool} outcome=completed issue_id={IssueId} issue_identifier={IssueIdentifier}",
+                name, issue.Id, issue.Identifier);
+        }
+        else
+        {
+            // Adapter errors carry a portable category and a message without secrets (SPEC 11.4).
+            var (category, message) = FailureOf(result);
+            _logger.LogWarning("action=tool_call tool={Tool} outcome=failed issue_id={IssueId} issue_identifier={IssueIdentifier} category={Category} reason={Reason}",
+                name, issue.Id, issue.Identifier, category, message);
+        }
+
+        return result;
+    }
+
+    private static (string? Category, string? Message) FailureOf(AgentToolResult result)
+    {
+        if (result.Output is JsonObject output && output["error"] is JsonObject error)
+        {
+            var message = Str(error["message"]);
+            return (Str(error["category"]), message is { Length: > 500 } ? message[..500] + "…" : message);
+        }
+
+        return (null, null);
     }
 
     private static string? Str(JsonNode? node) =>

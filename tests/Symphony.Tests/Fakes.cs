@@ -52,16 +52,24 @@ public sealed class FakeTracker : ITrackerAdapter
     }
 
     public IReadOnlyList<AgentToolSpec> AgentToolSpecs() =>
-        [new AgentToolSpec("echo", "echo", new JsonObject { ["type"] = "object" }, Mutates: false)];
+    [
+        new AgentToolSpec("echo", "echo", new JsonObject { ["type"] = "object" }, Mutates: false),
+        new AgentToolSpec("reject", "always fails with a tracker error", new JsonObject { ["type"] = "object" }, Mutates: true),
+        new AgentToolSpec("explode", "always throws", new JsonObject { ["type"] = "object" }, Mutates: true),
+    ];
 
     public IReadOnlyList<string> SecretEnvironmentNames() => ["FAKE_TRACKER_TOKEN"];
 
     public Task<AgentToolResult> ExecuteAgentToolAsync(string name, JsonObject arguments, Issue issue, CancellationToken ct)
     {
         lock (ToolCalls) ToolCalls.Add((name, arguments, issue.Id));
-        return Task.FromResult(name == "echo"
-            ? new AgentToolResult(true, new JsonObject { ["issue"] = issue.Identifier, ["args"] = arguments.DeepClone() })
-            : AgentToolResult.Fail("unsupported_tool", name));
+        return name switch
+        {
+            "echo" => Task.FromResult(new AgentToolResult(true, new JsonObject { ["issue"] = issue.Identifier, ["args"] = arguments.DeepClone() })),
+            "reject" => Task.FromResult(AgentToolResult.Fail(TrackerErrorCategories.Status, "transition New -> Done is not allowed")),
+            "explode" => throw new InvalidOperationException("adapter blew up"),
+            _ => Task.FromResult(AgentToolResult.Fail("unsupported_tool", name)),
+        };
     }
 
     public void Dispose() => Interlocked.Increment(ref Disposals);
@@ -81,6 +89,26 @@ public sealed class FakeTrackerFactory(FakeTracker tracker) : ITrackerAdapterFac
     }
 
     public ITrackerAdapter Create(TrackerSettings settings, Func<string, string?> env, ILoggerFactory loggerFactory) => tracker;
+}
+
+/// <summary>Records formatted log lines for assertions.</summary>
+public sealed class CapturingLogger<T> : ILogger<T>
+{
+    public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+    {
+        lock (Entries) Entries.Add((logLevel, formatter(state, exception)));
+    }
+
+    public (LogLevel Level, string Message)[] Snapshot()
+    {
+        lock (Entries) return [.. Entries];
+    }
 }
 
 /// <summary>Creates a new adapter per snapshot, like real factories do.</summary>
