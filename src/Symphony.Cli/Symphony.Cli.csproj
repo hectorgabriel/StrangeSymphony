@@ -10,6 +10,7 @@
     <ProjectReference Include="..\Symphony.Core\Symphony.Core.csproj" />
     <ProjectReference Include="..\Symphony.AzureDevOps\Symphony.AzureDevOps.csproj" />
     <ProjectReference Include="..\Symphony.Claude\Symphony.Claude.csproj" />
+    <ProjectReference Include="..\Symphony.Wrike\Symphony.Wrike.csproj" />
   </ItemGroup>
 
 </Project>

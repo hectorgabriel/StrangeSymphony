@@ -21,6 +21,7 @@
     <ProjectReference Include="..\..\src\Symphony.AzureDevOps\Symphony.AzureDevOps.csproj" />
     <ProjectReference Include="..\..\src\Symphony.Claude\Symphony.Claude.csproj" />
     <ProjectReference Include="..\..\src\Symphony.Cli\Symphony.Cli.csproj" />
+    <ProjectReference Include="..\..\src\Symphony.Wrike\Symphony.Wrike.csproj" />
   </ItemGroup>
 
 </Project>

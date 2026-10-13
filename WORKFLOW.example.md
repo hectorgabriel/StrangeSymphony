@@ -20,6 +20,19 @@ tracker:
   active_states: [New, Active]
   terminal_states: [Closed, Removed]
 
+# Wrike instead of Azure Boards: the queue is the subtasks of one Wrike task.
+# tracker:
+#   kind: wrike
+#   provider:
+#     parent_task_id: "https://www.wrike.com/open.htm?id=4583302343"
+#     host: www.wrike.com              # or app-eu.wrike.com / app-us2.wrike.com
+#     token: $WRIKE_TOKEN
+#     assigned_to: "@me"
+#     # workflow: "ABSEAL I&N"         # defaults to the queue task's workflow
+#   # Custom status names of that workflow. Hand-off status (for the prompt): Analizado.
+#   active_states: [Active, En Proceso]
+#   terminal_states: [Completed, Cancelled]
+
 polling:
   interval_ms: 30000
 

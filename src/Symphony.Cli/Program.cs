@@ -7,6 +7,7 @@ using Symphony.Core.Config;
 using Symphony.Core.Orchestration;
 using Symphony.Core.Workflow;
 using Symphony.Core.Workspaces;
+using Symphony.Wrike;
 
 return await SymphonyCli.RunAsync(args);
 
@@ -70,7 +71,7 @@ namespace Symphony.Cli
             }
 
             Func<string, string?> env = Environment.GetEnvironmentVariable;
-            var builder = new ConfigBuilder([new AzureDevOpsAdapterFactory()], env);
+            var builder = new ConfigBuilder([new AzureDevOpsAdapterFactory(), new WrikeAdapterFactory()], env);
             using var store = new WorkflowStore(workflowPath, builder, env, loggerFactory);
 
             EffectiveWorkflow initial;

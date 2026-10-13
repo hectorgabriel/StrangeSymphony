@@ -4,6 +4,7 @@
     <Project Path="src/Symphony.Claude/Symphony.Claude.csproj" />
     <Project Path="src/Symphony.Cli/Symphony.Cli.csproj" />
     <Project Path="src/Symphony.Core/Symphony.Core.csproj" />
+    <Project Path="src/Symphony.Wrike/Symphony.Wrike.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Symphony.Tests/Symphony.Tests.csproj" />
