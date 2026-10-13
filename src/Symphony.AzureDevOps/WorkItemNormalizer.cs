@@ -1,14 +1,13 @@
 using System.Globalization;
-using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 using Symphony.Core.Domain;
+using Symphony.Core.Util;
 
 namespace Symphony.AzureDevOps;
 
 /// <summary>Maps Azure DevOps work item payloads to the normalized <see cref="Issue"/> (SPEC 11.3).</summary>
-public static partial class WorkItemNormalizer
+public static class WorkItemNormalizer
 {
     public const string PredecessorRel = "System.LinkTypes.Dependency-Reverse";
 
@@ -120,21 +119,10 @@ public static partial class WorkItemNormalizer
     public static string? Description(JsonObject f)
     {
         var parts = new List<string>();
-        if (HtmlToText(Str(f["System.Description"])) is { Length: > 0 } d) parts.Add(d);
-        if (HtmlToText(Str(f["Microsoft.VSTS.TCM.ReproSteps"])) is { Length: > 0 } r) parts.Add($"Repro steps:\n{r}");
-        if (HtmlToText(Str(f["Microsoft.VSTS.Common.AcceptanceCriteria"])) is { Length: > 0 } a) parts.Add($"Acceptance criteria:\n{a}");
+        if (Html.ToText(Str(f["System.Description"])) is { Length: > 0 } d) parts.Add(d);
+        if (Html.ToText(Str(f["Microsoft.VSTS.TCM.ReproSteps"])) is { Length: > 0 } r) parts.Add($"Repro steps:\n{r}");
+        if (Html.ToText(Str(f["Microsoft.VSTS.Common.AcceptanceCriteria"])) is { Length: > 0 } a) parts.Add($"Acceptance criteria:\n{a}");
         return parts.Count == 0 ? null : string.Join("\n\n", parts);
-    }
-
-    public static string? HtmlToText(string? html)
-    {
-        if (string.IsNullOrWhiteSpace(html)) return null;
-        var s = BreakTags().Replace(html, "\n");
-        s = ListItem().Replace(s, "\n- ");
-        s = AnyTag().Replace(s, "");
-        s = WebUtility.HtmlDecode(s).Replace(' ', ' ');
-        s = ManyNewlines().Replace(s, "\n\n");
-        return s.Trim();
     }
 
     private static int? Priority(JsonNode? node) => node switch
@@ -158,16 +146,4 @@ public static partial class WorkItemNormalizer
 
     internal static string? Str(JsonNode? node) =>
         node is JsonValue v && v.GetValueKind() == JsonValueKind.String ? v.GetValue<string>() : null;
-
-    [GeneratedRegex(@"<\s*(br|/p|/div|/h[1-6]|/tr)\s*/?\s*>", RegexOptions.IgnoreCase)]
-    private static partial Regex BreakTags();
-
-    [GeneratedRegex(@"<\s*li[^>]*>", RegexOptions.IgnoreCase)]
-    private static partial Regex ListItem();
-
-    [GeneratedRegex(@"<[^>]+>")]
-    private static partial Regex AnyTag();
-
-    [GeneratedRegex(@"\n\s*\n(\s*\n)+")]
-    private static partial Regex ManyNewlines();
 }

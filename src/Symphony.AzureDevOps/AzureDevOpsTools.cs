@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json.Nodes;
 using Symphony.Core.Domain;
 using Symphony.Core.Tracker;
+using Symphony.Core.Util;
 
 namespace Symphony.AzureDevOps;
 
@@ -100,7 +101,7 @@ public static class AzureDevOpsTools
                             {
                                 ["author"] = WorkItemNormalizer.Str((c["createdBy"] as JsonObject)?["displayName"]),
                                 ["created"] = WorkItemNormalizer.Str(c["createdDate"]),
-                                ["text"] = WorkItemNormalizer.HtmlToText(WorkItemNormalizer.Str(c["text"])) ?? WorkItemNormalizer.Str(c["text"]),
+                                ["text"] = Html.ToText(WorkItemNormalizer.Str(c["text"])) ?? WorkItemNormalizer.Str(c["text"]),
                             })
                             .ToArray());
                     }
