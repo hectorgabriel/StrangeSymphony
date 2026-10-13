@@ -169,7 +169,7 @@ public static partial class WrikeTools
 
     /// <summary>
     /// The small Markdown subset agents write in summaries, as Wrike comment HTML: lines and blank lines become
-    /// breaks, "- " / "* " lines become a list, **bold**, [text](url) and bare URLs become links. Everything else is escaped.
+    /// breaks, "- " / "* " lines become a list, `code`, **bold**, [text](url) and bare URLs become links. Everything else is escaped.
     /// </summary>
     public static string MarkdownToHtml(string markdown)
     {
@@ -215,7 +215,22 @@ public static partial class WrikeTools
         return html.ToString();
     }
 
+    /// <summary>Code spans are escaped verbatim; the text between them gets links and bold.</summary>
     private static string Inline(string text)
+    {
+        var html = new StringBuilder();
+        var start = 0;
+        foreach (Match code in CodeSpan().Matches(text))
+        {
+            html.Append(Formatted(text[start..code.Index]))
+                .Append("<code>").Append(WebUtility.HtmlEncode(code.Groups[1].Value)).Append("</code>");
+            start = code.Index + code.Length;
+        }
+
+        return html.Append(Formatted(text[start..])).ToString();
+    }
+
+    private static string Formatted(string text)
     {
         var s = WebUtility.HtmlEncode(text);
         s = MarkdownLink().Replace(s, m => $"<a href=\"{m.Groups[2].Value}\">{m.Groups[1].Value}</a>");
@@ -246,6 +261,9 @@ public static partial class WrikeTools
 
     [GeneratedRegex(@"^\s*[-*]\s+(.*)$")]
     private static partial Regex ListItem();
+
+    [GeneratedRegex(@"`([^`]+)`")]
+    private static partial Regex CodeSpan();
 
     [GeneratedRegex(@"\[([^\]]+)\]\((https?://[^\s)]+)\)")]
     private static partial Regex MarkdownLink();

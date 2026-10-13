@@ -505,6 +505,16 @@ public class WrikeAdapterTests
             "Summary with <b>bold</b> and <a href=\"https://x.test/pr?a=1&amp;b=2\">PR</a><br /><ul><li>one</li><li>two</li></ul>See <a href=\"https://x.test/log\">https://x.test/log</a>",
             html);
     }
+
+    [Fact]
+    public void Markdown_code_spans_become_code_and_are_not_formatted()
+    {
+        var html = WrikeTools.MarkdownToHtml("Run `dotnet test **x** https://x.test <a>` then **done**, and a stray ` stays");
+
+        Assert.Equal(
+            "Run <code>dotnet test **x** https://x.test &lt;a&gt;</code> then <b>done</b>, and a stray ` stays",
+            html);
+    }
 }
 
 /// <summary>Read-only check against a real Wrike account. Skipped unless SYMPHONY_REAL_WRIKE=1.</summary>

@@ -113,6 +113,7 @@ These tools are served to Claude Code as the MCP server `tracker`, so the agent 
 - line breaks;
 - `- ` and `* ` lists;
 - `**bold**`;
+- `` `code` `` (inline code, escaped as written, with no bold or links inside);
 - `[text](https://…)` links and bare http(s) URLs.
 
 Everything else is HTML-escaped, so the text shows as written.
