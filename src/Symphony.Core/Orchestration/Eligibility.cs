@@ -13,25 +13,17 @@ public static class Eligibility
         && !string.IsNullOrWhiteSpace(issue.State);
 
     /// <summary><c>issue_routable</c>: adapter dispatchable plus every required label (case/whitespace-insensitive).</summary>
-    public static bool IsRoutable(Issue issue, ServiceConfig config)
+    public static bool IsRoutable(Issue issue, ServiceConfig config) =>
+        issue.Dispatchable && MissingLabels(issue, config).Count == 0;
+
+    /// <summary>Configured required labels the issue lacks (case/whitespace-insensitive).</summary>
+    public static IReadOnlyList<string> MissingLabels(Issue issue, ServiceConfig config)
     {
-        if (!issue.Dispatchable)
-        {
-            return false;
-        }
-
         var labels = issue.Labels.Select(l => l.Trim().ToLowerInvariant()).ToHashSet();
-        foreach (var required in config.Tracker.RequiredLabels)
-        {
-            var r = required.Trim().ToLowerInvariant();
-            // A blank configured label matches no issue.
-            if (r.Length == 0 || !labels.Contains(r))
-            {
-                return false;
-            }
-        }
-
-        return true;
+        // A blank configured label matches no issue.
+        return config.Tracker.RequiredLabels
+            .Where(required => required.Trim().ToLowerInvariant() is var r && (r.Length == 0 || !labels.Contains(r)))
+            .ToList();
     }
 
     public static IEnumerable<Issue> SortForDispatch(IEnumerable<Issue> issues) =>

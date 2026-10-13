@@ -24,6 +24,9 @@ public sealed record Issue
     public IReadOnlyList<string> Labels { get; init; } = [];
     public IReadOnlyList<BlockerRef> BlockedBy { get; init; } = [];
     public required bool Dispatchable { get; init; }
+
+    /// <summary>Why the adapter set <see cref="Dispatchable"/> to false, for operators; null when dispatchable.</summary>
+    public string? HoldReason { get; init; }
     public DateTimeOffset? CreatedAt { get; init; }
     public DateTimeOffset? UpdatedAt { get; init; }
 
@@ -63,6 +66,21 @@ public sealed record Issue
         JsonValue v when v.TryGetValue(out bool b) => b,
         _ => node.ToJsonString(),
     };
+}
+
+/// <summary>Operator-facing texts adapters use for <see cref="Issue.HoldReason"/>.</summary>
+public static class HoldReasons
+{
+    public static string NotAssigned(string assignedTo) => $"Not assigned to {assignedTo}";
+
+    /// <summary>"Blocked by A (Active), B (unknown state)", or null when every blocker is terminal.</summary>
+    public static string? Blocked(IEnumerable<BlockerRef> blockers, Func<string, bool> isTerminal)
+    {
+        var open = blockers.Where(b => b.State is null || !isTerminal(b.State))
+            .Select(b => $"{b.Identifier ?? b.Id} ({b.State ?? "unknown state"})")
+            .ToList();
+        return open.Count == 0 ? null : $"Blocked by {string.Join(", ", open)}";
+    }
 }
 
 public static class StateNames

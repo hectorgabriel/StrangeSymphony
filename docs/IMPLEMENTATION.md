@@ -65,6 +65,7 @@ Symphony **never reads, stores or forwards Claude credentials.** It runs the unm
 - **Retry kind:** not exposed to templates. `attempt` is 1-based for both continuations and failure retries (§12.3).
 - **Logging:** `key=value` lines on stdout through `Microsoft.Extensions.Logging` simple console, with UTC timestamps.
 - **Snapshot API:** never blocks the scheduler loop. It reads the state published after each event. Before the first publish it returns `503 unavailable`.
+- **Queue view (extension):** `/api/v1/state` adds `queue` and `last_poll`, and the dashboard shows them as "Queue". `queue` lists every candidate from the last successful poll, in dispatch order, with a `status` (`running`, `retrying`, `claimed`, `ready`, `waiting`, `blocked`, `held`, `missing_labels`, `invalid`) and a plain-language `reason`. Reasons are recomputed on every publish, so they follow runs and retries between polls. `last_poll` has `at`, the last poll `error` (the previous queue is kept) and `active_states`. Only issues in the active states are fetched, so an issue in any other state never appears. Adapters explain `dispatchable = false` in `Issue.HoldReason` ("Not assigned to @me", "Blocked by WR-1 (Analizado)").
 - **Windows:** hooks and the agent launch go through PowerShell. This path hasn't been tested; macOS and Linux are the tested platforms.
 
 ## Conformance

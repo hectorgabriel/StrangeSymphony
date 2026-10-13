@@ -213,10 +213,11 @@ public sealed class AzureDevOpsAdapter : ITrackerAdapter
                 blockerStates[id]))
             .ToList();
 
-        var dispatchable = await AssigneeMatchesAsync(raw.Fields, ct)
-            && (!_options.BlockOnPredecessors || blockers.All(b => b.State is not null && IsTerminal(b.State)));
+        var assigned = await AssigneeMatchesAsync(raw.Fields, ct);
+        var blocked = _options.BlockOnPredecessors ? HoldReasons.Blocked(blockers, IsTerminal) : null;
+        var hold = !assigned ? HoldReasons.NotAssigned(_options.AssignedTo!) : blocked;
 
-        return WorkItemNormalizer.ToIssue(raw, _options, blockers, dispatchable);
+        return WorkItemNormalizer.ToIssue(raw, _options, blockers, hold is null) is { } issue ? issue with { HoldReason = hold } : null;
     }
 
     private bool IsTerminal(string state)

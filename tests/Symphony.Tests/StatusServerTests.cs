@@ -68,6 +68,27 @@ public class StatusServerTests
         Assert.False(state.Headers.Contains("Access-Control-Allow-Origin"));
     }
 
+    [Fact]
+    public void State_json_includes_the_queue_and_last_poll()
+    {
+        var at = DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture);
+        var snapshot = new Symphony.Core.Orchestration.RuntimeSnapshot(
+            at, [], [], new(0, 0, 0, 0), null, null, new Dictionary<string, Symphony.Core.Orchestration.IssueDetail>(),
+            [new("id-1", "WR-1", "https://x.test/1", "Do it", "Active", 2, "blocked", "Blocked by WR-0 (Analizado)")],
+            new(at, null, ["Active", "En Proceso"]));
+
+        var json = StatusServer.StateJson(snapshot);
+
+        var row = json["queue"]![0]!;
+        Assert.Equal("WR-1", (string?)row["issue_identifier"]);
+        Assert.Equal("blocked", (string?)row["status"]);
+        Assert.Equal("Blocked by WR-0 (Analizado)", (string?)row["reason"]);
+        Assert.Equal(2, (int?)row["priority"]);
+        Assert.Equal(at.ToString("O"), (string?)json["last_poll"]!["at"]);
+        Assert.Null(json["last_poll"]!["error"]);
+        Assert.Equal("En Proceso", (string?)json["last_poll"]!["active_states"]![1]);
+    }
+
     private static bool TrySnap(OrchestratorHarness h)
     {
         try

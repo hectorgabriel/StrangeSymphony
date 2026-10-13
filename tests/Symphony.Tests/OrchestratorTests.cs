@@ -147,6 +147,69 @@ public class OrchestratorTests
     }
 
     [Fact]
+    public async Task Queue_explains_why_each_candidate_is_or_is_not_running()
+    {
+        await using var h = new OrchestratorHarness("agent:\n  max_concurrent_agents: 1");
+        h.Tracker.Put(TestIssues.Make("1", priority: 1));
+        h.Tracker.Put(TestIssues.Make("2", priority: 2));
+        h.Tracker.Put(TestIssues.Make("3", dispatchable: false) with { HoldReason = HoldReasons.NotAssigned("@me") });
+        h.Tracker.Put(TestIssues.Make("4", dispatchable: false) with
+        {
+            BlockedBy = [new BlockerRef("9", "WI-9", "In Progress"), new BlockerRef("8", "WI-8", "Done")],
+            HoldReason = "Blocked by WI-9 (In Progress)",
+        });
+        h.Tracker.Put(TestIssues.Make("5", dispatchable: false));
+        h.Tracker.Put(TestIssues.Make("6", state: "Done"));
+        h.Start();
+
+        await Wait.Until(() => h.Workers.Length == 1 && h.Snap.Queue.Count == 5, "dispatch and queue");
+        var queue = h.Snap.Queue.ToDictionary(c => c.IssueIdentifier, c => (c.Status, c.Reason));
+
+        Assert.Equal("WI-1", h.Snap.Queue[0].IssueIdentifier);
+        Assert.Equal(("running", "An agent session is running"), queue["WI-1"]);
+        Assert.Equal(("waiting", "All 1 agent slots are busy"), queue["WI-2"]);
+        Assert.Equal(("held", "Not assigned to @me"), queue["WI-3"]);
+        Assert.Equal(("blocked", "Blocked by WI-9 (In Progress)"), queue["WI-4"]);
+        Assert.Equal(("held", "The tracker adapter marked it not dispatchable"), queue["WI-5"]);
+        Assert.NotNull(h.Snap.LastPoll.At);
+        Assert.Null(h.Snap.LastPoll.Error);
+        Assert.Contains("Todo", h.Snap.LastPoll.ActiveStates);
+
+        h.Workers[0].Succeed();
+        await Wait.Until(() => h.Snap.Queue[0].Status == "retrying", "continuation shows in the queue");
+        var two = h.Snap.Queue.Single(c => c.IssueIdentifier == "WI-2");
+        Assert.Equal(("ready", "Starts on the next poll"), (two.Status, two.Reason));
+    }
+
+    [Fact]
+    public async Task Queue_reports_missing_labels_and_a_failed_poll()
+    {
+        await using var h = new OrchestratorHarness();
+        h.Tmp.Write(OrchestratorHarness.Yaml("").Replace("kind: fake", "kind: fake\n  required_labels: [Agent]"));
+        h.Store.ReloadIfChanged();
+        h.Tracker.Put(TestIssues.Make("1", labels: ["other"]));
+        h.Start();
+
+        await Wait.Until(() => h.Snap.Queue.Count == 1, "queue");
+        Assert.Equal(("missing_labels", "Missing required label \"Agent\""), (h.Snap.Queue[0].Status, h.Snap.Queue[0].Reason));
+
+        h.Tracker.FailStateFetches = true;
+        await h.Tick();
+        await Wait.Until(() => h.Snap.LastPoll.Error is not null, "poll error");
+        Assert.Single(h.Snap.Queue);
+    }
+
+    [Fact]
+    public void Hold_reasons_list_only_open_blockers()
+    {
+        static bool Terminal(string s) => s == "Done";
+        Assert.Null(HoldReasons.Blocked([new BlockerRef("1", "WI-1", "Done")], Terminal));
+        Assert.Equal(
+            "Blocked by WI-2 (Doing), 3 (unknown state)",
+            HoldReasons.Blocked([new BlockerRef("1", "WI-1", "Done"), new BlockerRef("2", "WI-2", "Doing"), new BlockerRef("3", null, null)], Terminal));
+    }
+
+    [Fact]
     public async Task Normal_exit_schedules_one_second_continuation_retry()
     {
         await using var h = new OrchestratorHarness();

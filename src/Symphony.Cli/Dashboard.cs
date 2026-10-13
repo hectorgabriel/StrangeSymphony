@@ -32,6 +32,9 @@ internal static class Dashboard
   a { color:var(--accent) }
   button { font:inherit; padding:6px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer }
   #error { margin-top:12px }
+  .badge { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); white-space:nowrap }
+  .badge.running, .badge.ready { color:var(--ok); border-color:var(--ok) }
+  .badge.blocked, .badge.held, .badge.missing_labels, .badge.invalid { color:var(--warn); border-color:var(--warn) }
 </style>
 </head>
 <body>
@@ -47,6 +50,9 @@ internal static class Dashboard
     <div class="tile"><span class="muted">Total tokens</span><b id="t-tokens">–</b></div>
     <div class="tile"><span class="muted">Agent runtime</span><b id="t-runtime">–</b></div>
   </div>
+  <h2>Queue</h2>
+  <div class="muted" id="poll"></div>
+  <div class="wrap"><table><thead><tr><th>Issue</th><th>Title</th><th>State</th><th>Status</th><th>Why</th></tr></thead><tbody id="queue"></tbody></table></div>
   <h2>Running sessions</h2>
   <div class="wrap"><table><thead><tr><th>Issue</th><th>State</th><th>Turns</th><th>Last event</th><th>Tokens</th><th>Started</th></tr></thead><tbody id="running"></tbody></table></div>
   <h2>Retry queue</h2>
@@ -75,6 +81,16 @@ async function load() {
     $('generated').textContent = `Updated ${time(s.generated_at)}`;
     $('t-running').textContent = s.counts.running; $('t-retrying').textContent = s.counts.retrying;
     $('t-tokens').textContent = fmt(s.codex_totals.total_tokens); $('t-runtime').textContent = dur(s.codex_totals.seconds_running);
+    const lp = s.last_poll ?? {};
+    $('poll').textContent = `Tasks in ${(lp.active_states ?? []).join(', ') || 'the active states'}, as of the last poll at ${time(lp.at)}.`
+      + (lp.error ? ` The last poll failed: ${lp.error}` : '');
+    const cb = $('queue'); cb.replaceChildren();
+    if (!(s.queue ?? []).length) empty(cb, 5, 'No tasks in the active states');
+    for (const c of s.queue ?? []) {
+      const row = cb.insertRow(); issueCell(row, c); cell(row, c.title, 'msg'); cell(row, c.state);
+      const b = document.createElement('span'); b.className = `badge ${c.status}`; b.textContent = c.status.replace('_', ' ');
+      row.insertCell().append(b); cell(row, c.reason, 'msg');
+    }
     const rb = $('running'); rb.replaceChildren();
     if (!s.running.length) empty(rb, 6, 'No active sessions');
     for (const r of s.running) {

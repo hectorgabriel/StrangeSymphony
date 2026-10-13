@@ -298,6 +298,7 @@ public class WrikeAdapterTests
 
         Assert.True(issues.Single(i => i.Id == "T1").Dispatchable);
         Assert.False(issues.Single(i => i.Id == "T2").Dispatchable);
+        Assert.Equal("Not assigned to @me", issues.Single(i => i.Id == "T2").HoldReason);
         Assert.Equal(FakeWrike.Me, issues.Single(i => i.Id == "T1").AssigneeId);
     }
 
@@ -317,6 +318,7 @@ public class WrikeAdapterTests
         var blocker = Assert.Single(one.BlockedBy);
         Assert.Equal(("PRE", "Analizado"), (blocker.Id, blocker.State));
         Assert.StartsWith("WR-", blocker.Identifier, StringComparison.Ordinal);
+        Assert.Equal($"Blocked by {blocker.Identifier} (Analizado)", one.HoldReason);
         // T2 is blocked by T1, which is still Active.
         Assert.False(issues.Single(i => i.Id == "T2").Dispatchable);
 
@@ -336,6 +338,7 @@ public class WrikeAdapterTests
         var one = (await adapter.FetchIssuesByStatesAsync(["Active"], default)).Single(i => i.Id == "T1");
 
         Assert.True(one.Dispatchable);
+        Assert.Null(one.HoldReason);
         Assert.Single(one.BlockedBy);
     }
 

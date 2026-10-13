@@ -43,6 +43,23 @@ public sealed record IssueDetail(
     IReadOnlyList<RecentEvent> RecentEvents,
     string? LastError);
 
+/// <summary>
+/// An active-state candidate from the last poll and why it is or isn't running. <see cref="Status"/> is one of
+/// running, retrying, claimed, ready, waiting, blocked, held, missing_labels, invalid.
+/// </summary>
+public sealed record CandidateRow(
+    string IssueId,
+    string IssueIdentifier,
+    string? IssueUrl,
+    string Title,
+    string State,
+    int? Priority,
+    string Status,
+    string Reason);
+
+/// <summary>The last candidate poll. Only issues in <see cref="ActiveStates"/> are fetched, so only they can appear in the queue.</summary>
+public sealed record PollInfo(DateTimeOffset? At, string? Error, IReadOnlyList<string> ActiveStates);
+
 /// <summary>Synchronous runtime snapshot (SPEC 13.3).</summary>
 public sealed record RuntimeSnapshot(
     DateTimeOffset GeneratedAt,
@@ -51,6 +68,8 @@ public sealed record RuntimeSnapshot(
     AgentTotals Totals,
     JsonNode? RateLimits,
     string? WorkflowError,
-    IReadOnlyDictionary<string, IssueDetail> Issues);
+    IReadOnlyDictionary<string, IssueDetail> Issues,
+    IReadOnlyList<CandidateRow> Queue,
+    PollInfo LastPoll);
 
 public sealed record RefreshResult(bool Queued, bool Coalesced, DateTimeOffset RequestedAt);

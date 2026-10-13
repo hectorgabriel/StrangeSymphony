@@ -109,6 +109,23 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
         },
         ["rate_limits"] = s.RateLimits?.DeepClone(),
         ["workflow_error"] = s.WorkflowError,
+        ["last_poll"] = new JsonObject
+        {
+            ["at"] = s.LastPoll.At?.ToString("O"),
+            ["error"] = s.LastPoll.Error,
+            ["active_states"] = new JsonArray(s.LastPoll.ActiveStates.Select(x => (JsonNode)x).ToArray()),
+        },
+        ["queue"] = new JsonArray(s.Queue.Select(c => (JsonNode)new JsonObject
+        {
+            ["issue_id"] = c.IssueId,
+            ["issue_identifier"] = c.IssueIdentifier,
+            ["issue_url"] = c.IssueUrl,
+            ["title"] = c.Title,
+            ["state"] = c.State,
+            ["priority"] = c.Priority,
+            ["status"] = c.Status,
+            ["reason"] = c.Reason,
+        }).ToArray()),
     };
 
     private static JsonObject RunningJson(RunningRow r) => new()

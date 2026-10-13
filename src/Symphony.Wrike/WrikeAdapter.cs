@@ -278,11 +278,13 @@ public sealed class WrikeAdapter : ITrackerAdapter
         var id = WrikeNormalizer.Str(task["id"]);
         var taskBlockers = id is not null && blockers.TryGetValue(id, out var b) ? b : [];
         var assigned = context.AssigneeId is null || WrikeNormalizer.Strings(task["responsibleIds"]).Contains(context.AssigneeId);
-        var dispatchable = assigned
-            && (!_options.BlockOnPredecessors || taskBlockers.All(x => x.State is not null && IsTerminal(x.State)));
+        var blocked = _options.BlockOnPredecessors ? HoldReasons.Blocked(taskBlockers, IsTerminal) : null;
+        var hold = !assigned ? HoldReasons.NotAssigned(_options.AssignedTo!) : blocked;
 
         var description = id is null ? null : await DescriptionAsync(id, task, ct);
-        return WrikeNormalizer.ToIssue(task, StateOf(context, task), description, _options, context.ParentId, taskBlockers, dispatchable);
+        return WrikeNormalizer.ToIssue(task, StateOf(context, task), description, _options, context.ParentId, taskBlockers, hold is null) is { } issue
+            ? issue with { HoldReason = hold }
+            : null;
     }
 
     /// <summary>

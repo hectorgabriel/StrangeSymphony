@@ -115,7 +115,9 @@ public sealed class Orchestrator
         IReadOnlyList<DateTimeOffset> ActiveStarts,
         JsonNode? RateLimits,
         string? WorkflowError,
-        IReadOnlyDictionary<string, IssueDetail> Issues);
+        IReadOnlyDictionary<string, IssueDetail> Issues,
+        IReadOnlyList<CandidateRow> Queue,
+        PollInfo LastPoll);
 
     private readonly WorkflowStore _store;
     private readonly WorkspaceManager _workspaces;
@@ -142,6 +144,12 @@ public sealed class Orchestrator
     private bool _tickInFlight;
     private bool _tickAgain;
     private volatile PublishedState? _published;
+
+    // The last successful candidate poll, kept so the queue view can explain each candidate between polls.
+    private IReadOnlyList<Issue> _candidates = [];
+    private ServiceConfig? _candidatesConfig;
+    private DateTimeOffset? _lastPollAt;
+    private string? _lastPollError;
 
     public Orchestrator(
         WorkflowStore store,
@@ -216,7 +224,9 @@ public sealed class Orchestrator
             new AgentTotals(p.InputTokens, p.OutputTokens, p.TotalTokens, Math.Round(seconds, 1)),
             p.RateLimits,
             p.WorkflowError,
-            p.Issues);
+            p.Issues,
+            p.Queue,
+            p.LastPoll);
     }
 
     private void Handle(Msg msg, CancellationToken ct)
@@ -342,11 +352,17 @@ public sealed class Orchestrator
 
             if (fetch.CandidatesError is { } ex)
             {
+                _lastPollError = ex.Message;
                 _logger.LogWarning("action=fetch_candidates outcome=failed reason={Reason} retry_after_ms={RetryAfterMs}", ex.Message, NoteRetryAfter(ex));
                 return;
             }
 
-            foreach (var issue in Eligibility.SortForDispatch(fetch.Candidates ?? []))
+            _candidates = Eligibility.SortForDispatch(fetch.Candidates ?? []).ToList();
+            _candidatesConfig = config;
+            _lastPollAt = _time.GetUtcNow();
+            _lastPollError = null;
+
+            foreach (var issue in _candidates)
             {
                 if (AvailableSlots(config) <= 0)
                 {
@@ -948,7 +964,68 @@ public sealed class Orchestrator
             _running.Values.Select(e => e.StartedAt).ToList(),
             _rateLimits?.DeepClone(),
             _store.LastError is { } err ? $"{err.Code}: {err.Message}" : null,
-            issues);
+            issues,
+            _candidatesConfig is { } config ? _candidates.Select(i => Explain(i, config)).ToList() : [],
+            new PollInfo(_lastPollAt, _lastPollError, (_candidatesConfig ?? _store.Current.Config).Tracker.ActiveStates));
+    }
+
+    /// <summary>The queue view: why a polled candidate is or isn't running, in the order dispatch tries them.</summary>
+    private CandidateRow Explain(Issue issue, ServiceConfig config)
+    {
+        var (status, reason) = Why(issue, config);
+        return new CandidateRow(issue.Id, issue.Identifier, issue.Url, issue.Title, issue.State, issue.Priority, status, reason);
+    }
+
+    private (string Status, string Reason) Why(Issue issue, ServiceConfig config)
+    {
+        if (_running.TryGetValue(issue.Id, out var run))
+        {
+            return ("running", run.Stop is null ? "An agent session is running" : $"Stopping: {run.Stop.Reason}");
+        }
+
+        if (_retries.TryGetValue(issue.Id, out var retry))
+        {
+            return ("retrying", retry.Error is null ? $"Continuation {retry.Attempt} is scheduled" : $"Retry {retry.Attempt} is scheduled after: {retry.Error}");
+        }
+
+        if (_claimed.Contains(issue.Id))
+        {
+            return ("claimed", "Claimed by a run that is finishing");
+        }
+
+        if (!Eligibility.HasRequiredFields(issue))
+        {
+            return ("invalid", "The tracker record has no id, identifier, title or state");
+        }
+
+        if (!config.IsActiveState(issue.State))
+        {
+            return ("invalid", $"State \"{issue.State}\" is also a terminal state");
+        }
+
+        if (!issue.Dispatchable)
+        {
+            var blocked = issue.HoldReason is not null && issue.HoldReason == HoldReasons.Blocked(issue.BlockedBy, config.IsTerminalState);
+            return (blocked ? "blocked" : "held", issue.HoldReason ?? "The tracker adapter marked it not dispatchable");
+        }
+
+        var missing = Eligibility.MissingLabels(issue, config);
+        if (missing.Count > 0)
+        {
+            return ("missing_labels", $"Missing required label {string.Join(", ", missing.Select(l => $"\"{l}\""))}");
+        }
+
+        if (AvailableSlots(config) <= 0)
+        {
+            return ("waiting", $"All {config.Agent.MaxConcurrentAgents} agent slots are busy");
+        }
+
+        if (!StateSlotAvailable(issue.State, config))
+        {
+            return ("waiting", $"The agent limit for state \"{issue.State}\" is reached");
+        }
+
+        return ("ready", "Starts on the next poll");
     }
 
     private static RunningRow ToRow(RunningEntry e) => new(

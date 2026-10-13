@@ -239,6 +239,7 @@ public class AzureDevOpsAdapterTests
         var issues = await adapter.FetchIssuesByStatesAsync(["To Do"], default);
 
         Assert.Equal([true, false, false], issues.Select(i => i.Dispatchable));
+        Assert.Equal([null, "Not assigned to @Me", "Not assigned to @Me"], issues.Select(i => i.HoldReason));
         Assert.Equal(3, issues.Count);
         Assert.Single(fake.Requests, r => r.Path.Contains("connectionData"));
     }
@@ -264,7 +265,9 @@ public class AzureDevOpsAdapterTests
 
         Assert.False(issues["1"].Dispatchable);
         Assert.Equal(new BlockerRefView("10", "WI-10", "Doing"), BlockerRefView.From(issues["1"].BlockedBy.Single()));
+        Assert.Equal("Blocked by WI-10 (Doing)", issues["1"].HoldReason);
         Assert.True(issues["2"].Dispatchable);
+        Assert.Null(issues["2"].HoldReason);
     }
 
     [Fact]
