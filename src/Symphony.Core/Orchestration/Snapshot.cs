@@ -57,6 +57,16 @@ public sealed record CandidateRow(
     string Status,
     string Reason);
 
+/// <summary>An issue Symphony recently let go of, newest first; <see cref="State"/> is null when it left the tracker's scope.</summary>
+public sealed record HandoffRow(
+    string IssueId,
+    string IssueIdentifier,
+    string? IssueUrl,
+    string? Title,
+    string? State,
+    DateTimeOffset At,
+    string Reason);
+
 /// <summary>The last candidate poll. Only issues in <see cref="ActiveStates"/> are fetched, so only they can appear in the queue.</summary>
 public sealed record PollInfo(DateTimeOffset? At, string? Error, IReadOnlyList<string> ActiveStates);
 
@@ -70,6 +80,7 @@ public sealed record RuntimeSnapshot(
     string? WorkflowError,
     IReadOnlyDictionary<string, IssueDetail> Issues,
     IReadOnlyList<CandidateRow> Queue,
-    PollInfo LastPoll);
+    PollInfo LastPoll,
+    IReadOnlyList<HandoffRow> Handoffs);
 
 public sealed record RefreshResult(bool Queued, bool Coalesced, DateTimeOffset RequestedAt);

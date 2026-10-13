@@ -69,13 +69,14 @@ public class StatusServerTests
     }
 
     [Fact]
-    public void State_json_includes_the_queue_and_last_poll()
+    public void State_json_includes_the_queue_last_poll_and_handoffs()
     {
         var at = DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture);
         var snapshot = new Symphony.Core.Orchestration.RuntimeSnapshot(
             at, [], [], new(0, 0, 0, 0), null, null, new Dictionary<string, Symphony.Core.Orchestration.IssueDetail>(),
             [new("id-1", "WR-1", "https://x.test/1", "Do it", "Active", 2, "blocked", "Blocked by WR-0 (Analizado)")],
-            new(at, null, ["Active", "En Proceso"]));
+            new(at, null, ["Active", "En Proceso"]),
+            [new("id-0", "WR-0", null, "Done it", "Analizado", at, "Moved to \"Analizado\"")]);
 
         var json = StatusServer.StateJson(snapshot);
 
@@ -87,6 +88,8 @@ public class StatusServerTests
         Assert.Equal(at.ToString("O"), (string?)json["last_poll"]!["at"]);
         Assert.Null(json["last_poll"]!["error"]);
         Assert.Equal("En Proceso", (string?)json["last_poll"]!["active_states"]![1]);
+        var handoff = json["handoffs"]![0]!;
+        Assert.Equal(("WR-0", "Analizado", "Moved to \"Analizado\""), ((string?)handoff["issue_identifier"], (string?)handoff["state"], (string?)handoff["reason"]));
     }
 
     private static bool TrySnap(OrchestratorHarness h)

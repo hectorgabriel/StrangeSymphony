@@ -126,6 +126,16 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
             ["status"] = c.Status,
             ["reason"] = c.Reason,
         }).ToArray()),
+        ["handoffs"] = new JsonArray(s.Handoffs.Select(h => (JsonNode)new JsonObject
+        {
+            ["issue_id"] = h.IssueId,
+            ["issue_identifier"] = h.IssueIdentifier,
+            ["issue_url"] = h.IssueUrl,
+            ["title"] = h.Title,
+            ["state"] = h.State,
+            ["at"] = h.At.ToString("O"),
+            ["reason"] = h.Reason,
+        }).ToArray()),
     };
 
     private static JsonObject RunningJson(RunningRow r) => new()

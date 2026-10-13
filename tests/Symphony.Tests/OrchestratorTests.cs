@@ -200,6 +200,33 @@ public class OrchestratorTests
     }
 
     [Fact]
+    public async Task Released_issues_show_as_handoffs_and_leave_the_queue()
+    {
+        await using var h = new OrchestratorHarness();
+        h.Tracker.Put(TestIssues.Make("1"));
+        h.Tracker.Put(TestIssues.Make("2"));
+        h.Start();
+        await Wait.Until(() => h.Workers.Length == 2, "dispatch");
+
+        // Released by reconciliation while running.
+        h.Tracker.Put(TestIssues.Make("1", state: "Human Review"));
+        await h.Tick();
+        await Wait.Until(() => h.Snap.Handoffs.Count == 1, "first handoff");
+        var first = h.Snap.Handoffs[0];
+        Assert.Equal(("WI-1", "Title 1", "Human Review", "Moved to \"Human Review\""), (first.IssueIdentifier, first.Title, first.State, first.Reason));
+        Assert.DoesNotContain(h.Snap.Queue, c => c.IssueIdentifier == "WI-1");
+
+        // Released by a retry that finds the issue terminal; newest first.
+        h.Workers.Single(w => w.Issue.Id == "2").Succeed();
+        await Wait.Until(() => h.Snap.Retrying.Count == 1, "continuation");
+        h.Tracker.Put(TestIssues.Make("2", state: "Done"));
+        h.Time.Advance(TimeSpan.FromSeconds(1));
+        await Wait.Until(() => h.Snap.Handoffs.Count == 2, "second handoff");
+        Assert.Equal(("WI-2", "Reached terminal state \"Done\""), (h.Snap.Handoffs[0].IssueIdentifier, h.Snap.Handoffs[0].Reason));
+        Assert.DoesNotContain(h.Snap.Queue, c => c.IssueIdentifier == "WI-2");
+    }
+
+    [Fact]
     public void Hold_reasons_list_only_open_blockers()
     {
         static bool Terminal(string s) => s == "Done";

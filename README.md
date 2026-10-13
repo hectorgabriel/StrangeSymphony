@@ -23,7 +23,7 @@ Azure Boards ──poll──▶ Orchestrator ──dispatch──▶ Worker ─
    ```bash
    dotnet run --project src/Symphony.Cli -- path/to/WORKFLOW.md --port 4510
    ```
-   Then open <http://127.0.0.1:4510> for the dashboard. Its Queue section shows each task in an active state and why it is or isn't running. The API is at `/api/v1/state`, `/api/v1/<WI-123>` and `POST /api/v1/refresh`.
+   Then open <http://127.0.0.1:4510> for the dashboard. Its read-only board shows each task in an active state and why it is or isn't running, plus the tasks Symphony recently handed off. The API is at `/api/v1/state`, `/api/v1/<WI-123>` and `POST /api/v1/refresh`.
 
 To have the agent pick up an item in Azure Boards, give it an active state, assign it to yourself (with `assigned_to: "@me"`), and add the `agent` tag (with `required_labels: [agent]`). In Wrike, make the task a subtask of the queue task (`parent_task_id`) and give it an active status.
 

@@ -117,7 +117,8 @@ public sealed class Orchestrator
         string? WorkflowError,
         IReadOnlyDictionary<string, IssueDetail> Issues,
         IReadOnlyList<CandidateRow> Queue,
-        PollInfo LastPoll);
+        PollInfo LastPoll,
+        IReadOnlyList<HandoffRow> Handoffs);
 
     private readonly WorkflowStore _store;
     private readonly WorkspaceManager _workspaces;
@@ -150,6 +151,9 @@ public sealed class Orchestrator
     private ServiceConfig? _candidatesConfig;
     private DateTimeOffset? _lastPollAt;
     private string? _lastPollError;
+
+    private const int HandoffLimit = 20;
+    private readonly List<HandoffRow> _handoffs = new();
 
     public Orchestrator(
         WorkflowStore store,
@@ -226,7 +230,8 @@ public sealed class Orchestrator
             p.WorkflowError,
             p.Issues,
             p.Queue,
-            p.LastPoll);
+            p.LastPoll,
+            p.Handoffs);
     }
 
     private void Handle(Msg msg, CancellationToken ct)
@@ -635,6 +640,7 @@ public sealed class Orchestrator
                 _logger.LogInformation("action=worker_exit outcome=released issue_id={IssueId} issue_identifier={IssueIdentifier} session_id={SessionId} reason={Reason}",
                     issue.Id, issue.Identifier, entry.SessionId, entry.Stop.Reason);
                 Release(issue.Id);
+                RecordHandoff(issue.Id, issue.Identifier, issue.Url, entry.Stop.Reason == "not_visible" ? null : issue);
                 if (entry.Stop.CleanupWorkspace)
                 {
                     StartCleanup(issue.Identifier);
@@ -782,6 +788,7 @@ public sealed class Orchestrator
         {
             _logger.LogInformation("action=retry outcome=released issue_id={IssueId} issue_identifier={IssueIdentifier} reason=not_visible", retry.IssueId, retry.Identifier);
             Release(retry.IssueId);
+            RecordHandoff(retry.IssueId, retry.Identifier, retry.Url, null);
             return;
         }
 
@@ -789,6 +796,7 @@ public sealed class Orchestrator
         {
             _logger.LogInformation("action=retry outcome=released issue_id={IssueId} issue_identifier={IssueIdentifier} reason=terminal_state state={State}", issue.Id, issue.Identifier, issue.State);
             Release(issue.Id);
+            RecordHandoff(issue.Id, issue.Identifier, issue.Url, issue);
             StartCleanup(issue.Identifier);
             return;
         }
@@ -797,6 +805,7 @@ public sealed class Orchestrator
         {
             _logger.LogInformation("action=retry outcome=released issue_id={IssueId} issue_identifier={IssueIdentifier} reason=not_active_or_unroutable state={State}", issue.Id, issue.Identifier, issue.State);
             Release(issue.Id);
+            RecordHandoff(issue.Id, issue.Identifier, issue.Url, issue);
             return;
         }
 
@@ -825,6 +834,26 @@ public sealed class Orchestrator
         var ms = RetryAfterMs(ex);
         _nextTickMinDelayMs = Math.Max(_nextTickMinDelayMs, ms);
         return ms;
+    }
+
+    /// <summary>Remembers a release for the board; <paramref name="issue"/> is the refreshed record, null when it left scope.</summary>
+    private void RecordHandoff(string issueId, string identifier, string? url, Issue? issue)
+    {
+        var config = _store.Current.Config;
+        var reason = issue switch
+        {
+            null => "No longer visible to the tracker adapter",
+            _ when config.IsTerminalState(issue.State) => $"Reached terminal state \"{issue.State}\"",
+            _ when !config.IsActiveState(issue.State) => $"Moved to \"{issue.State}\"",
+            { Dispatchable: false } => $"No longer eligible: {issue.HoldReason ?? "not dispatchable"}",
+            _ => "No longer eligible: missing a required label",
+        };
+
+        _handoffs.Insert(0, new HandoffRow(issueId, identifier, issue?.Url ?? url, issue?.Title, issue?.State, _time.GetUtcNow(), reason));
+        if (_handoffs.Count > HandoffLimit)
+        {
+            _handoffs.RemoveAt(_handoffs.Count - 1);
+        }
     }
 
     private void Release(string issueId)
@@ -965,9 +994,14 @@ public sealed class Orchestrator
             _rateLimits?.DeepClone(),
             _store.LastError is { } err ? $"{err.Code}: {err.Message}" : null,
             issues,
-            _candidatesConfig is { } config ? _candidates.Select(i => Explain(i, config)).ToList() : [],
-            new PollInfo(_lastPollAt, _lastPollError, (_candidatesConfig ?? _store.Current.Config).Tracker.ActiveStates));
+            _candidatesConfig is { } config ? _candidates.Where(i => !HandedOffSincePoll(i.Id)).Select(i => Explain(i, config)).ToList() : [],
+            new PollInfo(_lastPollAt, _lastPollError, (_candidatesConfig ?? _store.Current.Config).Tracker.ActiveStates),
+            _handoffs.ToList());
     }
+
+    /// <summary>The last poll still lists an issue released after it; hide it until the next poll confirms.</summary>
+    private bool HandedOffSincePoll(string issueId) =>
+        _handoffs.Any(h => h.IssueId == issueId && h.At >= _lastPollAt) && !_running.ContainsKey(issueId) && !_retries.ContainsKey(issueId);
 
     /// <summary>The queue view: why a polled candidate is or isn't running, in the order dispatch tries them.</summary>
     private CandidateRow Explain(Issue issue, ServiceConfig config)
