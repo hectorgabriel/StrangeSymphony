@@ -54,7 +54,24 @@ public sealed class OrchestratorHarness : IAsyncDisposable
         await control.Done.Task.WaitAsync(ct);
     }
 
-    public void Start() => _run = Task.Run(() => Orchestrator.RunAsync(_stop.Token));
+    /// <summary>Starts the loop and waits for its first published state, so <see cref="Snap"/> is readable.</summary>
+    public void Start()
+    {
+        _run = Task.Run(() => Orchestrator.RunAsync(_stop.Token));
+        var published = SpinWait.SpinUntil(() =>
+        {
+            try
+            {
+                Orchestrator.GetSnapshot();
+                return true;
+            }
+            catch (InvalidOperationException)
+            {
+                return _run.IsCompleted;
+            }
+        }, TimeSpan.FromSeconds(5));
+        Assert.True(published, "orchestrator never published a snapshot");
+    }
 
     public RuntimeSnapshot Snap => Orchestrator.GetSnapshot();
 

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using Symphony.Core.Domain;
 using Symphony.Core.Tracker;
+using Symphony.Core.Util;
 using Symphony.Core.Workflow;
 
 namespace Symphony.Core.Config;
@@ -82,12 +83,19 @@ public sealed partial class ConfigBuilder(IEnumerable<ITrackerAdapterFactory> fa
 
         // hooks
         var hooks = Section(root, "hooks");
+        var shell = NullIfBlank(String(hooks, "hooks.shell", "shell")) ?? ShellRunner.Auto;
+        if (!ShellRunner.IsValidSetting(shell))
+        {
+            throw Invalid("hooks.shell", "must be auto, bash, powershell, pwsh or an absolute path to a bash executable");
+        }
+
         var hookSettings = new HookSettings(
             NullIfBlank(String(hooks, "hooks.after_create", "after_create")),
             NullIfBlank(String(hooks, "hooks.before_run", "before_run")),
             NullIfBlank(String(hooks, "hooks.after_run", "after_run")),
             NullIfBlank(String(hooks, "hooks.before_remove", "before_remove")),
-            Int(hooks, "hooks.timeout_ms", "timeout_ms", 60000, min: 1));
+            Int(hooks, "hooks.timeout_ms", "timeout_ms", 60000, min: 1),
+            shell);
 
         // agent
         var agent = Section(root, "agent");

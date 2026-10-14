@@ -176,7 +176,7 @@ public sealed class WorkflowStore : IDisposable
             byte[] hash;
             try
             {
-                hash = SHA256.HashData(File.ReadAllBytes(_path));
+                hash = SHA256.HashData(ReadAllBytesPatiently(_path));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -226,7 +226,7 @@ public sealed class WorkflowStore : IDisposable
     private (EffectiveWorkflow, byte[]) Build()
     {
         var bytes = ReadBytes();
-        var definition = WorkflowLoader.Parse(System.Text.Encoding.UTF8.GetString(bytes));
+        var definition = WorkflowLoader.Parse(DecodeUtf8(bytes));
         var config = _builder.Build(definition, _path);
         // Surface template syntax errors at load time; rendering errors still fail per attempt.
         PromptRenderer.Parse(definition.PromptTemplate);
@@ -238,13 +238,38 @@ public sealed class WorkflowStore : IDisposable
     {
         try
         {
-            return File.ReadAllBytes(_path);
+            return ReadAllBytesPatiently(_path);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             throw new WorkflowException(WorkflowErrorCodes.MissingWorkflowFile, $"cannot read workflow file {_path}: {ex.Message}", ex);
         }
     }
+
+    /// <summary>
+    /// Reads the file, retrying briefly while another process holds it. On Windows the watcher fires while
+    /// the editor is still writing, and the first read fails with a sharing violation.
+    /// </summary>
+    private static byte[] ReadAllBytesPatiently(string path)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return File.ReadAllBytes(path);
+            }
+            catch (IOException ex) when (ex is not (FileNotFoundException or DirectoryNotFoundException) && attempt < 4)
+            {
+                Thread.Sleep(100);
+            }
+        }
+    }
+
+    /// <summary>UTF-8 without the byte order mark, which Windows editors add and which would hide the front matter.</summary>
+    public static string DecodeUtf8(byte[] bytes) =>
+        bytes.AsSpan().StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF])
+            ? System.Text.Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3)
+            : System.Text.Encoding.UTF8.GetString(bytes);
 
     private void LogWarnings(EffectiveWorkflow snapshot)
     {

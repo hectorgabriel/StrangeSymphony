@@ -12,7 +12,9 @@ public sealed record HookSettings(
     string? BeforeRun,
     string? AfterRun,
     string? BeforeRemove,
-    int TimeoutMs);
+    int TimeoutMs,
+    // auto | bash | powershell | pwsh | absolute path to a bash; see ShellRunner.Resolve.
+    string Shell = Util.ShellRunner.Auto);
 
 public sealed record AgentSettings(
     int MaxConcurrentAgents,

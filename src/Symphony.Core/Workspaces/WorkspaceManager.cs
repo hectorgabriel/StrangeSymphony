@@ -28,14 +28,23 @@ public static class WorkspaceKeys
         }
 
         var sanitized = sb.ToString();
-        // "." and ".." are valid characters but would escape or alias the root.
-        if (sanitized == identifier && sanitized is not ("" or "." or ".."))
+        // "." and ".." are valid characters but would escape or alias the root. Windows also refuses device
+        // names (CON, NUL, COM1…, with or without an extension) and drops a trailing dot, so "WI-1." and
+        // "WI-1" would share a folder. Hashing those keeps the key the same on every OS.
+        if (sanitized == identifier && sanitized is not ("" or "." or "..") && !sanitized.EndsWith('.') && !IsWindowsDeviceName(sanitized))
         {
             return sanitized;
         }
 
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(identifier));
         return $"{sanitized}-{Convert.ToHexStringLower(hash.AsSpan(0, 8))}";
+    }
+
+    private static bool IsWindowsDeviceName(string name)
+    {
+        var stem = name.Split('.')[0].ToUpperInvariant();
+        return stem is "CON" or "PRN" or "AUX" or "NUL"
+            || (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.Ordinal) || stem.StartsWith("LPT", StringComparison.Ordinal)) && stem[3] is >= '0' and <= '9');
     }
 }
 
@@ -92,7 +101,7 @@ public sealed class WorkspaceManager(ILogger<WorkspaceManager> logger)
 
         if (createdNow && config.Hooks.AfterCreate is { } afterCreate)
         {
-            var ok = await RunHookAsync("after_create", afterCreate, path, identifier, config.Hooks.TimeoutMs, ct);
+            var ok = await RunHookAsync("after_create", afterCreate, path, identifier, config.Hooks, ct);
             if (!ok)
             {
                 TryDelete(path);
@@ -103,13 +112,15 @@ public sealed class WorkspaceManager(ILogger<WorkspaceManager> logger)
         return new Workspace(path, key, createdNow);
     }
 
-    public async Task<bool> RunHookAsync(string name, string script, string cwd, string identifier, int timeoutMs, CancellationToken ct)
+    public async Task<bool> RunHookAsync(string name, string script, string cwd, string identifier, HookSettings hooks, CancellationToken ct)
     {
+        var timeoutMs = hooks.TimeoutMs;
         logger.LogInformation("action=hook hook={Hook} outcome=started issue_identifier={IssueIdentifier}", name, identifier);
         ShellResult result;
         try
         {
-            result = await ShellRunner.RunAsync(script, cwd, timeoutMs, ct);
+            WarnOnShellFallback(hooks.Shell);
+            result = await ShellRunner.RunAsync(script, cwd, timeoutMs, ct, hooks.Shell);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -156,29 +167,90 @@ public sealed class WorkspaceManager(ILogger<WorkspaceManager> logger)
 
         if (config.Hooks.BeforeRemove is { } beforeRemove)
         {
-            await RunHookAsync("before_remove", beforeRemove, path, identifier, config.Hooks.TimeoutMs, ct);
+            await RunHookAsync("before_remove", beforeRemove, path, identifier, config.Hooks, ct);
         }
 
-        TryDelete(path);
-        logger.LogInformation("action=workspace_cleanup outcome=completed issue_identifier={IssueIdentifier} path={Path}", identifier, path);
+        if (TryDelete(path))
+        {
+            logger.LogInformation("action=workspace_cleanup outcome=completed issue_identifier={IssueIdentifier} path={Path}", identifier, path);
+        }
     }
 
-    private void TryDelete(string path)
+    private bool TryDelete(string path)
     {
         try
         {
-            if (new DirectoryInfo(path).LinkTarget is not null)
-            {
-                Directory.Delete(path); // remove the link only
-            }
-            else
-            {
-                Directory.Delete(path, recursive: true);
-            }
+            DeleteDirectory(path);
+            return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             logger.LogWarning("action=workspace_cleanup outcome=failed path={Path} reason={Reason}", path, ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Deletes a workspace tree. A link is removed without following it. On Windows, git writes its objects
+    /// read-only, which <see cref="Directory.Delete(string, bool)"/> refuses, so the attribute is cleared first;
+    /// and a just-killed agent can hold a file for a moment, so a failed delete is retried briefly.
+    /// </summary>
+    public static void DeleteDirectory(string path)
+    {
+        var info = new DirectoryInfo(path);
+        if (info.LinkTarget is not null)
+        {
+            Directory.Delete(path); // remove the link only
+            return;
+        }
+
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    ClearReadOnly(info);
+                }
+
+                Directory.Delete(path, recursive: true);
+                return;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < 5 && OperatingSystem.IsWindows())
+            {
+                Thread.Sleep(100 * attempt);
+            }
+        }
+    }
+
+    private static void ClearReadOnly(DirectoryInfo root)
+    {
+        // Don't descend through links: their targets are not ours to touch.
+        var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = true };
+        foreach (var entry in root.EnumerateFileSystemInfos("*", options))
+        {
+            if (entry.Attributes.HasFlag(FileAttributes.ReadOnly))
+            {
+                entry.Attributes &= ~FileAttributes.ReadOnly;
+            }
+        }
+    }
+
+    private int _fallbackWarned;
+
+    private void WarnOnShellFallback(string setting)
+    {
+        if (OperatingSystem.IsWindows()
+            && setting.Equals(ShellRunner.Auto, StringComparison.OrdinalIgnoreCase)
+            && ShellRunner.Resolve(setting).Kind == ShellKind.PowerShell
+            && Interlocked.Exchange(ref _fallbackWarned, 1) == 0)
+        {
+            logger.LogWarning("action=hook outcome=shell_fallback shell=powershell.exe reason={Reason}",
+                "Git Bash not found; hooks run in Windows PowerShell. Install Git for Windows or set hooks.shell.");
         }
     }
 }

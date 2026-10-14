@@ -84,14 +84,26 @@ public class ConfigBuilderTests
     [Fact]
     public void Workspace_root_supports_env_tilde_and_relative_paths()
     {
-        Assert.Equal("/tmp/from-env/ws", Build("tracker: {kind: fake}\nworkspace:\n  root: $WS_ROOT/ws").WorkspaceRoot);
-        Assert.Equal("/opt/x", Build("tracker: {kind: fake}\nworkspace:\n  root: ${HOMEISH}/x").WorkspaceRoot);
+        // GetFullPath: on Windows a rooted "/tmp/x" lands on the current drive, "C:\tmp\x".
+        Assert.Equal(Path.GetFullPath("/tmp/from-env/ws"), Build("tracker: {kind: fake}\nworkspace:\n  root: $WS_ROOT/ws").WorkspaceRoot);
+        Assert.Equal(Path.GetFullPath("/opt/x"), Build("tracker: {kind: fake}\nworkspace:\n  root: ${HOMEISH}/x").WorkspaceRoot);
         Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "sym"),
             Build("tracker: {kind: fake}\nworkspace:\n  root: ~/sym").WorkspaceRoot);
-        Assert.Equal("/repo/work", Build("tracker: {kind: fake}\nworkspace:\n  root: ./work").WorkspaceRoot);
+        Assert.Equal(Path.GetFullPath("/repo/work"), Build("tracker: {kind: fake}\nworkspace:\n  root: ./work").WorkspaceRoot);
 
         var ex = Assert.Throws<WorkflowException>(() => Build("tracker: {kind: fake}\nworkspace:\n  root: $NOPE/x"));
         Assert.Equal(ConfigErrorCodes.InvalidConfig, ex.Code);
+    }
+
+    [Theory]
+    [InlineData(null, "auto")]
+    [InlineData("bash", "bash")]
+    [InlineData("PowerShell", "PowerShell")]
+    [InlineData("pwsh", "pwsh")]
+    public void Hook_shell_defaults_to_auto(string? value, string expected)
+    {
+        var c = Build("tracker: {kind: fake}" + (value is null ? "" : $"\nhooks:\n  shell: {value}"));
+        Assert.Equal(expected, c.Hooks.Shell);
     }
 
     [Fact]
@@ -113,6 +125,8 @@ public class ConfigBuilderTests
     [InlineData("tracker: {kind: fake}\nagent:\n  max_turns: lots")]
     [InlineData("tracker: {kind: fake}\nhooks:\n  timeout_ms: -1")]
     [InlineData("tracker: {kind: fake}\nclaude:\n  command: \"  \"")]
+    [InlineData("tracker: {kind: fake}\nhooks:\n  shell: zsh")]
+    [InlineData("tracker: {kind: fake}\nhooks:\n  shell: bin/bash")]
     public void Invalid_values_fail_validation(string yaml)
     {
         var ex = Assert.Throws<WorkflowException>(() => Build(yaml));
@@ -188,6 +202,19 @@ public class WorkflowStoreTests
         store.StartWatching();
         tmp.Write("tracker: {kind: fake}\npolling: {interval_ms: 4321}");
         await Wait.Until(() => store.Current.Config.PollIntervalMs == 4321, "watcher reload");
+    }
+
+    [Fact]
+    public void A_byte_order_mark_does_not_hide_the_front_matter()
+    {
+        // Windows PowerShell 5.1's Set-Content/Out-File -Encoding utf8 write one.
+        using var tmp = new TempWorkflow("tracker: {kind: fake}");
+        File.WriteAllText(tmp.Path, "---\ntracker: {kind: fake}\npolling: {interval_ms: 1234}\n---\nbody\n", new System.Text.UTF8Encoding(true));
+        Assert.Equal(0xEF, File.ReadAllBytes(tmp.Path)[0]);
+        using var store = tmp.Store(new FakeTracker());
+        store.LoadInitial();
+        Assert.Equal(1234, store.Current.Config.PollIntervalMs);
+        Assert.Equal("body", store.Current.PromptTemplate);
     }
 
     [Fact]

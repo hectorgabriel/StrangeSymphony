@@ -1,5 +1,4 @@
 using System.Net.Http.Headers;
-using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -12,17 +11,16 @@ using Symphony.Core.Workflow;
 namespace Symphony.Tests;
 
 /// <summary>
-/// Drives ClaudeCodeSession against a fake `claude` that speaks the stream-json protocol. The fake
-/// is a bash script, so these tests are POSIX-only.
+/// Drives ClaudeCodeSession against a fake `claude` that speaks the stream-json protocol. The fake is a
+/// bash script; on Windows it is not an .exe, so it goes through the hook shell, which is Git Bash.
 /// </summary>
-[UnsupportedOSPlatform("windows")]
 public sealed class ClaudeRunnerTests : IDisposable
 {
     private const string FakeClaude = """
         #!/usr/bin/env bash
         OUT="$(dirname "$0")"
         printf '%s\n' "$@" > "$OUT/args.txt"
-        pwd > "$OUT/cwd.txt"
+        { pwd -W 2>/dev/null || pwd; } > "$OUT/cwd.txt"
         env > "$OUT/env.txt"
         SID=""
         while [ $# -gt 0 ]; do [ "$1" = "--session-id" ] && SID="$2"; shift; done
@@ -55,12 +53,15 @@ public sealed class ClaudeRunnerTests : IDisposable
         Directory.CreateDirectory(_bin);
         var script = Path.Combine(_bin, "fake-claude");
         File.WriteAllText(script, FakeClaude.Replace("\r\n", "\n"));
-        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
     }
 
     private (ServiceConfig Config, string Workspace) Setup(string claudeYaml = "")
     {
-        _tmp.Write($"tracker: {{kind: fake}}\nworkspace: {{root: \"{{ROOT}}\"}}\nclaude:\n  command: \"{Path.Combine(_bin, "fake-claude")}\"\n  model: sonnet\n  allowed_tools: [\"Bash(git *)\", Edit]\n{claudeYaml}");
+        _tmp.Write($"tracker: {{kind: fake}}\nworkspace: {{root: \"{{ROOT}}\"}}\nclaude:\n  command: \"{TempWorkflow.YamlPath(Path.Combine(_bin, "fake-claude"))}\"\n  model: sonnet\n  allowed_tools: [\"Bash(git *)\", Edit]\n{claudeYaml}");
         var config = new ConfigBuilder([new FakeTrackerFactory(_tracker)], _ => null).Build(WorkflowLoader.Load(_tmp.Path), _tmp.Path);
         var ws = Path.Combine(config.WorkspaceRoot, "WI-1");
         Directory.CreateDirectory(ws);
@@ -117,7 +118,7 @@ public sealed class ClaudeRunnerTests : IDisposable
                 await session.RunTurnAsync("go", TestIssues.Make("1"), default);
             }
 
-            Assert.Equal(Path.GetFullPath(ws).Replace("/private/", "/"), Read("cwd.txt").Trim().Replace("/private/", "/"));
+            Assert.Equal(TempWorkflow.NativePath(Path.GetFullPath(ws)), TempWorkflow.NativePath(Read("cwd.txt")), StringComparer.OrdinalIgnoreCase);
             var env = Read("env.txt");
             Assert.DoesNotContain("should-not-leak", env);
             Assert.DoesNotContain("CLAUDECODE=", env);
@@ -204,7 +205,10 @@ public sealed class ClaudeRunnerTests : IDisposable
             var mcpPath = args[Array.IndexOf(args, "--mcp-config") + 1];
             Assert.Contains("mcp__tracker", args);
             Assert.False(mcpPath.StartsWith(config.WorkspaceRoot, StringComparison.Ordinal), "MCP config must live outside the workspace");
-            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(mcpPath));
+            if (!OperatingSystem.IsWindows())
+            {
+                Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(mcpPath));
+            }
 
             var server = JsonNode.Parse(File.ReadAllText(mcpPath))!["mcpServers"]!["tracker"]!;
             var url = server["url"]!.GetValue<string>();
@@ -257,4 +261,58 @@ public sealed class ClaudeRunnerTests : IDisposable
     }
 
     public void Dispose() => _tmp.Dispose();
+}
+
+public sealed class ClaudeCommandLineTests : IDisposable
+{
+    private readonly string _dir = Directory.CreateTempSubdirectory("symphony-cmd-").FullName;
+
+    private string Touch(string name)
+    {
+        var path = Path.Combine(_dir, name);
+        File.WriteAllText(path, "");
+        return path;
+    }
+
+    private string? Find(string command) =>
+        ClaudeCommandLine.FindWindowsExecutable(command, n => n == "PATH" ? _dir : null);
+
+    [Fact]
+    public void A_bare_name_resolves_to_its_exe_on_path()
+    {
+        var exe = Touch("claude.exe");
+        Assert.Equal(exe, Find("claude"));
+        Assert.Equal(exe, Find("claude.exe"));
+        Assert.Equal(exe, Find($"\"{exe}\""));
+    }
+
+    [Theory]
+    [InlineData("claude --debug")]
+    [InlineData("claude.cmd")]
+    [InlineData("claude.ps1")]
+    [InlineData("not-installed")]
+    [InlineData("claude && echo")]
+    [InlineData("$HOME/bin/claude")]
+    public void Anything_else_goes_through_the_shell(string command)
+    {
+        Touch("claude.exe");
+        Touch("claude.cmd");
+        Assert.Null(Find(command));
+    }
+
+    [Fact]
+    public void Direct_launch_passes_arguments_untouched()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        var psi = ClaudeCommandLine.StartInfo(cmd, ["--name", "WI-1: \"quoted\" title", ""], _dir);
+        Assert.Equal(cmd, psi.FileName);
+        Assert.Equal(["--name", "WI-1: \"quoted\" title", ""], psi.ArgumentList);
+    }
+
+    public void Dispose() => Directory.Delete(_dir, recursive: true);
 }

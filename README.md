@@ -27,6 +27,18 @@ Azure Boards ──poll──▶ Orchestrator ──dispatch──▶ Worker ─
 
 To have the agent pick up an item in Azure Boards, give it an active state, assign it to yourself (with `assigned_to: "@me"`), and add the `agent` tag (with `required_labels: [agent]`). In Wrike, make the task a subtask of the queue task (`parent_task_id`) and give it an active status.
 
+## Windows
+
+Symphony runs on Windows too. The same `WORKFLOW.md` works there because hooks run in Git Bash.
+
+- **Prerequisites:** [Git for Windows](https://git-scm.com/download/win) (it provides Git Bash, which Claude Code also needs for its Bash tool), the .NET 10 SDK, and `claude`.
+- **Tokens:** `setx WRIKE_TOKEN "..."` (or `AZURE_DEVOPS_PAT`), then open a new terminal; or `$env:WRIKE_TOKEN = "..."` for the current PowerShell session only.
+- **Hook shell:** `hooks.shell: auto` (the default) finds Git Bash by path, never the WSL `bash.exe` in `System32`. Set `CLAUDE_CODE_GIT_BASH_PATH` if Git lives somewhere unusual, or `hooks.shell: powershell` to write hooks in PowerShell.
+- **Paths:** keep `workspace.root` short (for example `'C:/sym/ws'`) and run `git config --global core.longpaths true`; deep repositories pass the 260-character limit quickly. In YAML, use forward slashes or single quotes for Windows paths.
+- **Git credentials:** clone the repository once by hand so Git Credential Manager stores the login. Hooks run unattended and can't show a sign-in prompt.
+
+Details are in [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md#other-implementation-defined-choices).
+
 ## Team setup: everyone uses their own login
 
 Each team member runs their own copy against the same `WORKFLOW.md` in the repo:

@@ -56,7 +56,7 @@ public sealed class ClaudeCodeSessionFactory(IToolGateway? toolGateway, string p
 
             var sessionId = Guid.NewGuid().ToString();
             var args = ClaudeCommandLine.BuildArgs(config.Claude, sessionId, mcpConfigPath, hasTools, $"{request.Issue.Identifier}: {request.Issue.Title}");
-            var psi = ClaudeCommandLine.StartInfo(config.Claude.Command, args, cwd);
+            var psi = ClaudeCommandLine.StartInfo(config.Claude.Command, args, cwd, config.Hooks.Shell);
             foreach (var name in request.Tracker.SecretEnvironmentNames().Concat(AlwaysStripped))
             {
                 psi.Environment.Remove(name);
@@ -161,6 +161,8 @@ public sealed class ClaudeCodeSession : IAgentSession
         }
 
         _process = process;
+        // stream-json is newline-delimited; keep it "\n" on Windows too.
+        process.StandardInput.NewLine = "\n";
         // The pumps outlive the start call's token; they end when the process's streams close.
         _stdoutPump = Task.Run(() => PumpStdoutAsync(process), CancellationToken.None);
         _stderrPump = Task.Run(() => PumpStderrAsync(process), CancellationToken.None);
@@ -416,15 +418,27 @@ public sealed class ClaudeCodeSession : IAgentSession
         return $"agent process exited (code {code}){(tail.Length > 0 ? $": {Truncate(tail)}" : "")}";
     }
 
-    /// <summary>Maps an exited agent process to <c>agent_not_found</c> (shell exit 127) or <c>port_exit</c>.</summary>
+    /// <summary>
+    /// Maps an exited agent process to <c>agent_not_found</c> (bash exit 127, or PowerShell's
+    /// <c>CommandNotFoundException</c>, which exits 1) or <c>port_exit</c>.
+    /// </summary>
     private async Task<AgentException> ExitFailureAsync(Process process, Exception? inner)
     {
         await WaitForExitQuietly(process);
         if (_stderrPump is not null) await _stderrPump.WaitAsync(TimeSpan.FromSeconds(2)).ContinueWith(_ => { });
         var description = ExitDescription();
         Emit(AgentEventNames.TurnFailed, description);
-        var notFound = process.HasExited && process.ExitCode == 127;
+        var notFound = process.HasExited
+            && (process.ExitCode == 127 || (process.ExitCode == 1 && StderrContains("CommandNotFoundException")));
         return new AgentException(notFound ? AgentErrorCodes.AgentNotFound : AgentErrorCodes.PortExit, description, inner);
+    }
+
+    private bool StderrContains(string text)
+    {
+        lock (_stderrTail)
+        {
+            return _stderrTail.ToString().Contains(text, StringComparison.Ordinal);
+        }
     }
 
     private static async Task WaitForExitQuietly(Process process)
