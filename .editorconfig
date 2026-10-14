@@ -77,6 +77,9 @@ dotnet_diagnostic.IDE1006.severity = warning # naming rules above
 # Log calls use message templates; LoggerMessage source generation buys nothing at these call
 # rates and would replace every log line.
 dotnet_diagnostic.CA1848.severity = none
+# Same reasoning for the guard CA1873 asks for (new in SDK 10.0.3xx): the arguments are fields and
+# properties already in hand, and these lines log at Information, which is always on.
+dotnet_diagnostic.CA1873.severity = none
 
 [tests/**.cs]
 # xUnit test names read as sentences.
