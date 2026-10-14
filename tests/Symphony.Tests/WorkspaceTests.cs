@@ -30,6 +30,15 @@ public class WorkspaceKeyTests
     }
 
     [Theory]
+    [InlineData("CON")]
+    [InlineData("nul")]
+    [InlineData("COM1.txt")]
+    [InlineData("LPT9")]
+    [InlineData("WI-1.")]
+    public void Windows_device_names_and_trailing_dots_are_hashed(string id) =>
+        Assert.Matches("^.+-[0-9a-f]{16}$", WorkspaceKeys.For(id));
+
+    [Theory]
     [InlineData("..")]
     [InlineData(".")]
     [InlineData("../../etc")]
@@ -98,7 +107,7 @@ public class WorkspaceManagerTests : IDisposable
     public async Task Remove_runs_before_remove_and_ignores_its_failure()
     {
         var outside = Path.Combine(_tmp.Dir, "removed.txt");
-        var config = Config($"hooks:\n  before_remove: \"echo bye > '{outside}'; exit 1\"");
+        var config = Config($"hooks:\n  before_remove: \"echo bye > '{TempWorkflow.YamlPath(outside)}'; exit 1\"");
         var ws = await _manager.CreateForIssueAsync("WI-5", config, default);
         await _manager.RemoveAsync("WI-5", config, default);
         Assert.False(Directory.Exists(ws.Path));
@@ -108,10 +117,39 @@ public class WorkspaceManagerTests : IDisposable
     [Fact]
     public async Task Hooks_run_with_workspace_as_cwd()
     {
-        var config = Config("hooks:\n  after_create: pwd > cwd.txt");
+        // Git Bash's `pwd` prints its own mounts (%TEMP% is /tmp there); `pwd -W` prints the Windows path.
+        var config = Config("hooks:\n  after_create: \"{ pwd -W 2>/dev/null || pwd; } > cwd.txt\"");
         var ws = await _manager.CreateForIssueAsync("WI-6", config, default);
         var cwd = (await File.ReadAllTextAsync(Path.Combine(ws.Path, "cwd.txt"))).Trim();
-        Assert.Equal(new DirectoryInfo(ws.Path).FullName.Replace("/private/", "/"), cwd.Replace("/private/", "/"));
+        Assert.Equal(TempWorkflow.NativePath(new DirectoryInfo(ws.Path).FullName), TempWorkflow.NativePath(cwd), StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Remove_deletes_read_only_files_like_git_objects()
+    {
+        var config = Config();
+        var ws = await _manager.CreateForIssueAsync("WI-7", config, default);
+        var objects = Directory.CreateDirectory(Path.Combine(ws.Path, ".git", "objects", "ab"));
+        var pack = Path.Combine(objects.FullName, "cdef");
+        await File.WriteAllTextAsync(pack, "blob");
+        File.SetAttributes(pack, FileAttributes.ReadOnly);
+
+        await _manager.RemoveAsync("WI-7", config, default);
+        Assert.False(Directory.Exists(ws.Path));
+    }
+
+    [Fact]
+    public async Task Hooks_can_run_in_powershell()
+    {
+        // `$PSVersionTable` only exists in PowerShell; under bash this writes an empty line.
+        if (!OperatingSystem.IsWindows())
+        {
+            return; // Windows PowerShell is always there; pwsh on POSIX is optional
+        }
+
+        var config = Config("hooks:\n  shell: powershell\n  after_create: \"$PSVersionTable.PSEdition | Out-File -Encoding ascii edition.txt\"");
+        var ws = await _manager.CreateForIssueAsync("WI-8", config, default);
+        Assert.Matches("^(Desktop|Core)$", (await File.ReadAllTextAsync(Path.Combine(ws.Path, "edition.txt"))).Trim());
     }
 
     [Fact]

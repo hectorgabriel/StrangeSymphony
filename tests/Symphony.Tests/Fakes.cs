@@ -6,6 +6,7 @@ using Symphony.Core.Config;
 using Symphony.Core.Domain;
 using Symphony.Core.Tracker;
 using Symphony.Core.Workflow;
+using Symphony.Core.Workspaces;
 
 namespace Symphony.Tests;
 
@@ -144,7 +145,28 @@ public sealed class TempWorkflow : IDisposable
     }
 
     public void Write(string frontMatter, string body = "Work on {{ issue.identifier }}") =>
-        File.WriteAllText(Path, $"---\n{frontMatter.Replace("{ROOT}", WorkspaceRoot)}\n---\n{body}\n");
+        File.WriteAllText(Path, $"---\n{frontMatter.Replace("{ROOT}", YamlPath(WorkspaceRoot))}\n---\n{body}\n");
+
+    /// <summary>
+    /// A path that is safe inside a double-quoted YAML scalar and a bash script: Windows backslashes
+    /// would be YAML escapes (<c>\U…</c> must be 8 hex digits), so use the forward slashes Windows accepts too.
+    /// </summary>
+    public static string YamlPath(string path) => path.Replace('\\', '/');
+
+    /// <summary>
+    /// A directory as a shell printed it, in this OS's form. Git Bash's <c>pwd</c> prints <c>/c/Users/…</c>;
+    /// macOS adds a <c>/private</c> prefix to temp folders.
+    /// </summary>
+    public static string NativePath(string shellPath)
+    {
+        var p = shellPath.Trim().Replace("/private/", "/");
+        if (OperatingSystem.IsWindows() && p.Length >= 3 && p[0] == '/' && char.IsAsciiLetter(p[1]) && p[2] == '/')
+        {
+            p = $"{char.ToUpperInvariant(p[1])}:{p[2..]}";
+        }
+
+        return OperatingSystem.IsWindows() ? System.IO.Path.GetFullPath(p) : p;
+    }
 
     public WorkflowStore Store(FakeTracker tracker) =>
         new(Path, new ConfigBuilder([new FakeTrackerFactory(tracker)], _ => null), _ => null, NullLoggerFactory.Instance);
@@ -153,9 +175,9 @@ public sealed class TempWorkflow : IDisposable
     {
         try
         {
-            Directory.Delete(Dir, recursive: true);
+            WorkspaceManager.DeleteDirectory(Dir);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
         }
     }

@@ -37,10 +37,14 @@ polling:
   interval_ms: 30000
 
 workspace:
+  # On Windows prefer a short path, with forward slashes or in single quotes: 'C:/sym/ws'
   root: ~/symphony_workspaces
 
 hooks:
   timeout_ms: 300000
+  # auto (default) = bash -lc; on Windows that is Git Bash, so these hooks work there unchanged.
+  # Alternatives: bash | powershell | pwsh | an absolute path to a bash.
+  # shell: auto
   after_create: |
     git clone --depth 50 https://dev.azure.com/your-org/Your%20Project/_git/your-repo .
   before_run: |

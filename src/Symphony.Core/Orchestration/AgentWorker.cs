@@ -40,7 +40,7 @@ public sealed class AgentWorker(WorkspaceManager workspaces, IAgentSessionFactor
         try
         {
             if (config.Hooks.BeforeRun is { } beforeRun
-                && !await workspaces.RunHookAsync("before_run", beforeRun, workspace.Path, issue.Identifier, config.Hooks.TimeoutMs, ct))
+                && !await workspaces.RunHookAsync("before_run", beforeRun, workspace.Path, issue.Identifier, config.Hooks, ct))
             {
                 throw new WorkerFailedException("before_run hook error");
             }
@@ -52,7 +52,7 @@ public sealed class AgentWorker(WorkspaceManager workspaces, IAgentSessionFactor
             // after_run runs after success, failure, timeout or cancellation once the workspace exists.
             if (config.Hooks.AfterRun is { } afterRun)
             {
-                await workspaces.RunHookAsync("after_run", afterRun, workspace.Path, issue.Identifier, config.Hooks.TimeoutMs, CancellationToken.None);
+                await workspaces.RunHookAsync("after_run", afterRun, workspace.Path, issue.Identifier, config.Hooks, CancellationToken.None);
             }
         }
     }
