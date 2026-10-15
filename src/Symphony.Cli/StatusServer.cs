@@ -52,6 +52,7 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
         });
 
         _app.MapGet("/", () => Results.Content(Dashboard.Html, "text/html; charset=utf-8"));
+        _app.MapGet("/score", () => Results.Content(Dashboard.ScoreHtml, "text/html; charset=utf-8"));
         _app.MapGet("/api/v1/state", () => Snapshot(s => Json(StateJson(s))));
         _app.MapPost("/api/v1/refresh", () =>
         {

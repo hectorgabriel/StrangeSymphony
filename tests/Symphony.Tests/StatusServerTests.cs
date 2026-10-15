@@ -24,7 +24,7 @@ public class StatusServerTests
         var url = new Uri(server.Url!);
 
         using var http = new HttpClient();
-        foreach (var (method, path) in new[] { (HttpMethod.Get, "/api/v1/state"), (HttpMethod.Get, "/"), (HttpMethod.Post, "/api/v1/refresh") })
+        foreach (var (method, path) in new[] { (HttpMethod.Get, "/api/v1/state"), (HttpMethod.Get, "/"), (HttpMethod.Get, "/score"), (HttpMethod.Post, "/api/v1/refresh") })
         {
             using var req = new HttpRequestMessage(method, new Uri(url, path));
             if (host is not null) req.Headers.Host = $"{host}:{url.Port}";
