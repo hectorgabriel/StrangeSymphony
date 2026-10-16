@@ -177,4 +177,40 @@ public class ExampleWorkflowTests
         Assert.DoesNotContain("Tags:", plain);
         Assert.DoesNotContain("attempt", plain);
     }
+
+    [Theory]
+    [InlineData("Por Analizar", "analyst.md", "/bossdream-mode plan", "\"Analizado\"")]
+    [InlineData("Por Desarrollar", "developer.md", "/bossdream-mode plan", "\"Plan Propuesto\"")]
+    [InlineData("Plan Aprobado", "developer.md", "/bossdream-mode implement", "\"Por Probar\"")]
+    [InlineData("Por Probar", "tester.md", "/bossdream-mode implement", "\"Con Defectos\"")]
+    [InlineData("Por Documentar", "documentador.md", "/bossdream-mode document", "\"Documentado\"")]
+    public void Sdlc_example_workflow_routes_each_active_status_to_its_role(string state, string role, string mode, string handoff)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "WORKFLOW.sdlc.example.md");
+        var definition = WorkflowLoader.Load(path);
+        var config = new Symphony.Core.Config.ConfigBuilder(
+            [new Symphony.Wrike.WrikeAdapterFactory()],
+            n => n == "WRIKE_TOKEN" ? "token" : null).Build(definition, path);
+
+        Assert.Contains(state, config.Tracker.ActiveStates);
+
+        var prompt = Symphony.Core.Templating.PromptRenderer.Render(definition.PromptTemplate, TestIssues.Make("1", state: state), null);
+        Assert.Contains($".claude/agents/{role}", prompt);
+        Assert.Contains(mode, prompt);
+        Assert.Contains(handoff, prompt);
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(prompt, "/bossdream-mode "));
+        Assert.DoesNotContain("Stage: unknown", prompt);
+    }
+
+    [Fact]
+    public void Sdlc_example_workflow_flags_a_status_without_a_stage()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "WORKFLOW.sdlc.example.md");
+        var definition = WorkflowLoader.Load(path);
+
+        var prompt = Symphony.Core.Templating.PromptRenderer.Render(definition.PromptTemplate, TestIssues.Make("1", state: "En Proceso"), null);
+
+        Assert.Contains("Stage: unknown", prompt);
+        Assert.DoesNotContain("/bossdream-mode ", prompt);
+    }
 }
