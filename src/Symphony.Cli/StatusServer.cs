@@ -136,6 +136,9 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
             ["state"] = h.State,
             ["at"] = h.At.ToString("O"),
             ["reason"] = h.Reason,
+            ["handoff_state"] = h.HandoffState,
+            ["closed"] = h.Closed,
+            ["checked_at"] = h.CheckedAt?.ToString("O"),
         }).ToArray()),
     };
 
