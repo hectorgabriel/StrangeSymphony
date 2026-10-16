@@ -5,6 +5,7 @@ using Symphony.Claude;
 using Symphony.Cli;
 using Symphony.Core.Config;
 using Symphony.Core.Orchestration;
+using Symphony.Core.PullRequests;
 using Symphony.Core.Workflow;
 using Symphony.Core.Workspaces;
 using Symphony.Wrike;
@@ -71,7 +72,8 @@ namespace Symphony.Cli
             }
 
             Func<string, string?> env = Environment.GetEnvironmentVariable;
-            var builder = new ConfigBuilder([new AzureDevOpsAdapterFactory(), new WrikeAdapterFactory()], env);
+            IPullRequestProviderFactory[] pullRequestProviders = [new AzureReposPullRequestProviderFactory()];
+            var builder = new ConfigBuilder([new AzureDevOpsAdapterFactory(), new WrikeAdapterFactory()], env, pullRequestProviders);
             using var store = new WorkflowStore(workflowPath, builder, env, loggerFactory);
 
             EffectiveWorkflow initial;
@@ -106,7 +108,8 @@ namespace Symphony.Cli
 
                 var workspaces = new WorkspaceManager(loggerFactory.CreateLogger<WorkspaceManager>());
                 var agents = new ClaudeCodeSessionFactory(gateway, stateDir, loggerFactory);
-                var worker = new AgentWorker(workspaces, agents, loggerFactory.CreateLogger<AgentWorker>());
+                var pullRequests = new PullRequestToolFactory(pullRequestProviders, env, loggerFactory);
+                var worker = new AgentWorker(workspaces, agents, loggerFactory.CreateLogger<AgentWorker>(), pullRequests);
                 var orchestrator = new Orchestrator(store, workspaces, worker.RunAsync, TimeProvider.System, loggerFactory.CreateLogger<Orchestrator>());
 
                 // CLI --port overrides server.port; listener changes need a restart (SPEC 13.7).

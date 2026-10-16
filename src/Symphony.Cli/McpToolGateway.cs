@@ -23,6 +23,9 @@ public sealed class McpToolGateway : IToolGateway, IAsyncDisposable
 {
     private const string ServerName = "symphony-tracker";
 
+    /// <summary>Per-call limit for tools whose spec sets no <see cref="AgentToolSpec.TimeoutMs"/>.</summary>
+    public const int DefaultToolTimeoutMs = 60000;
+
     /// <summary>MCP protocol revisions this server speaks, newest first.</summary>
     private static readonly string[] SupportedProtocolVersions = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
@@ -185,7 +188,8 @@ public sealed class McpToolGateway : IToolGateway, IAsyncDisposable
     private async Task<AgentToolResult> CallToolAsync(Registration reg, string name, JsonObject args, CancellationToken ct)
     {
         var issue = reg.CurrentIssue();
-        if (!reg.Tracker.AgentToolSpecs().Any(s => s.Name == name))
+        var spec = reg.Tracker.AgentToolSpecs().FirstOrDefault(s => s.Name == name);
+        if (spec is null)
         {
             _logger.LogWarning("action=tool_call tool={Tool} outcome=unsupported issue_id={IssueId} issue_identifier={IssueIdentifier} category={Category}",
                 name, issue.Id, issue.Identifier, "unsupported_tool");
@@ -193,7 +197,7 @@ public sealed class McpToolGateway : IToolGateway, IAsyncDisposable
         }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(60));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(spec.TimeoutMs ?? DefaultToolTimeoutMs));
         AgentToolResult result;
         try
         {

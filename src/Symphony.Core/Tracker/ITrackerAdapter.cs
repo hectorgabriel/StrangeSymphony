@@ -31,7 +31,11 @@ public sealed class TrackerException(string category, string message, Exception?
     public override string ToString() => $"{Category}: {Message}";
 }
 
-public sealed record AgentToolSpec(string Name, string Description, JsonObject InputSchema, bool Mutates);
+public sealed record AgentToolSpec(string Name, string Description, JsonObject InputSchema, bool Mutates)
+{
+    /// <summary>How long one call may run before the gateway cancels it; null means the gateway default.</summary>
+    public int? TimeoutMs { get; init; }
+}
 
 /// <summary>Tool outcome; <see cref="Output"/> is JSON-safe (SPEC 10.5).</summary>
 public sealed record AgentToolResult(bool Success, JsonNode? Output)

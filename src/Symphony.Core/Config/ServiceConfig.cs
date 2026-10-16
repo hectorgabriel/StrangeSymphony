@@ -39,6 +39,21 @@ public sealed record ClaudeSettings(
     int ReadTimeoutMs,
     int StallTimeoutMs);
 
+/// <summary>
+/// Front matter key <c>pull_request</c> (extension): lets the agent open a pull request through the
+/// host, which first checks the branch and runs <see cref="VerifyCommand"/>. See docs/pull-requests.md.
+/// </summary>
+public sealed record PullRequestSettings(
+    string Kind,
+    IReadOnlyDictionary<string, object?> Provider,
+    string Remote,
+    string TargetBranch,
+    bool Draft,
+    string VerifyCommand,
+    int VerifyTimeoutMs,
+    int MaxFiles,
+    IReadOnlyList<string> ForbiddenPaths);
+
 public sealed record ServiceConfig(
     string WorkflowPath,
     TrackerSettings Tracker,
@@ -48,7 +63,8 @@ public sealed record ServiceConfig(
     AgentSettings Agent,
     ClaudeSettings Claude,
     int? ServerPort,
-    IReadOnlyList<string> Warnings)
+    IReadOnlyList<string> Warnings,
+    PullRequestSettings? PullRequest = null)
 {
     public bool IsActiveState(string state)
     {
