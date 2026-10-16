@@ -182,12 +182,16 @@ public static class ShellRunner
         return (psi, scriptFile);
     }
 
-    public static async Task<ShellResult> RunAsync(string script, string cwd, int timeoutMs, CancellationToken ct, string shell = Auto)
+    /// <summary>
+    /// Runs <paramref name="script"/>. Output past <see cref="MaxCapturedChars"/> is dropped from the end, or
+    /// from the start when <paramref name="keepTail"/> is set (build logs put their errors last).
+    /// </summary>
+    public static async Task<ShellResult> RunAsync(string script, string cwd, int timeoutMs, CancellationToken ct, string shell = Auto, bool keepTail = false)
     {
         var (psi, scriptFile) = ShellStartInfo(script, cwd, shell);
         try
         {
-            return await RunAsync(psi, timeoutMs, ct);
+            return await RunAsync(psi, timeoutMs, keepTail, ct);
         }
         finally
         {
@@ -205,7 +209,7 @@ public static class ShellRunner
         }
     }
 
-    private static async Task<ShellResult> RunAsync(ProcessStartInfo psi, int timeoutMs, CancellationToken ct)
+    private static async Task<ShellResult> RunAsync(ProcessStartInfo psi, int timeoutMs, bool keepTail, CancellationToken ct)
     {
         psi.RedirectStandardOutput = true;
         psi.RedirectStandardError = true;
@@ -222,6 +226,19 @@ public static class ShellRunner
             if (line is null) return;
             lock (output)
             {
+                if (keepTail)
+                {
+                    // Trim in batches, so a long log isn't copied once per line.
+                    output.AppendLine(line.Length > MaxCapturedChars ? line[^MaxCapturedChars..] : line);
+                    if (output.Length > 2 * MaxCapturedChars)
+                    {
+                        output.Remove(0, output.Length - MaxCapturedChars);
+                        truncated = true;
+                    }
+
+                    return;
+                }
+
                 // Cap while capturing, so one huge line never lands in memory whole.
                 var room = MaxCapturedChars - output.Length;
                 if (line.Length > room)
@@ -253,12 +270,12 @@ public static class ShellRunner
         {
             KillTree(process);
             ct.ThrowIfCancellationRequested();
-            return new ShellResult(null, true, Captured(output, ref truncated));
+            return new ShellResult(null, true, Captured(output, ref truncated, keepTail));
         }
 
         // Flush async readers.
         process.WaitForExit();
-        return new ShellResult(process.ExitCode, false, Captured(output, ref truncated));
+        return new ShellResult(process.ExitCode, false, Captured(output, ref truncated, keepTail));
     }
 
     public static void KillTree(Process process)
@@ -277,12 +294,24 @@ public static class ShellRunner
     }
 
     /// <summary>Captured output, marked whenever anything was dropped.</summary>
-    private static string Captured(StringBuilder sb, ref bool truncated)
+    private static string Captured(StringBuilder sb, ref bool truncated, bool keepTail)
     {
         lock (sb)
         {
-            var s = sb.ToString().TrimEnd();
-            return truncated ? s + "…[truncated]" : s;
+            if (!keepTail)
+            {
+                var s = sb.ToString().TrimEnd();
+                return truncated ? s + "…[truncated]" : s;
+            }
+
+            if (sb.Length > MaxCapturedChars)
+            {
+                sb.Remove(0, sb.Length - MaxCapturedChars);
+                truncated = true;
+            }
+
+            var tail = sb.ToString().TrimEnd();
+            return truncated ? "[truncated]…" + tail : tail;
         }
     }
 }

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Symphony.Core.Domain;
+using Symphony.Core.PullRequests;
 using Symphony.Core.Tracker;
 using Symphony.Core.Util;
 using Symphony.Core.Workflow;
@@ -17,10 +18,19 @@ public static class ConfigErrorCodes
 /// Resolves the typed view of WORKFLOW.md front matter (SPEC 6.1): defaults, <c>$VAR</c>
 /// indirection for paths, coercion, and dispatch preflight validation (SPEC 6.3).
 /// </summary>
-public sealed partial class ConfigBuilder(IEnumerable<ITrackerAdapterFactory> factories, Func<string, string?> env)
+public sealed partial class ConfigBuilder(
+    IEnumerable<ITrackerAdapterFactory> factories,
+    Func<string, string?> env,
+    IEnumerable<IPullRequestProviderFactory>? pullRequestFactories = null)
 {
+    /// <summary>Directories and files a pull request may not contain unless <c>pull_request.forbidden_paths</c> says otherwise.</summary>
+    public static readonly IReadOnlyList<string> DefaultForbiddenPaths = ["bin/", "obj/", "packages/", "node_modules/", ".vs/"];
+
     private readonly Dictionary<string, ITrackerAdapterFactory> _factories =
         factories.ToDictionary(f => f.Kind, StringComparer.OrdinalIgnoreCase);
+
+    private readonly Dictionary<string, IPullRequestProviderFactory> _pullRequestFactories =
+        (pullRequestFactories ?? []).ToDictionary(f => f.Kind, StringComparer.OrdinalIgnoreCase);
 
     public IReadOnlyCollection<string> SupportedKinds => _factories.Keys;
 
@@ -130,6 +140,8 @@ public sealed partial class ConfigBuilder(IEnumerable<ITrackerAdapterFactory> fa
         var server = Section(root, "server");
         int? port = server.ContainsKey("port") ? Int(server, "server.port", "port", 0, min: 0) : null;
 
+        var pullRequest = PullRequest(root, claudeSettings, warnings);
+
         return new ServiceConfig(
             Path.GetFullPath(workflowPath),
             new TrackerSettings(kind, provider, requiredLabels, activeStates, terminalStates),
@@ -139,7 +151,63 @@ public sealed partial class ConfigBuilder(IEnumerable<ITrackerAdapterFactory> fa
             agentSettings,
             claudeSettings,
             port,
-            warnings);
+            warnings,
+            pullRequest);
+    }
+
+    /// <summary><c>pull_request</c> (extension; docs/pull-requests.md). Absent means the agent gets no PR tool.</summary>
+    private PullRequestSettings? PullRequest(IReadOnlyDictionary<string, object?> root, ClaudeSettings claude, List<string> warnings)
+    {
+        if (!root.TryGetValue("pull_request", out var raw) || raw is null)
+        {
+            return null;
+        }
+
+        var section = Section(root, "pull_request");
+        var kind = NullIfBlank(String(section, "pull_request.kind", "kind"))
+            ?? throw Invalid("pull_request.kind", $"is required (supported: {string.Join(", ", _pullRequestFactories.Keys)})");
+        if (!_pullRequestFactories.TryGetValue(kind, out var factory))
+        {
+            throw Invalid("pull_request.kind", $"'{kind}' is not supported (supported: {string.Join(", ", _pullRequestFactories.Keys)})");
+        }
+
+        var provider = section.TryGetValue("provider", out var p) && p is not null
+            ? p as Dictionary<string, object?> ?? throw Invalid("pull_request.provider", "must be a map")
+            : new Dictionary<string, object?>();
+        try
+        {
+            factory.ValidateProvider(provider, env);
+        }
+        catch (PullRequestException ex)
+        {
+            throw new WorkflowException(ex.Category, ex.Message, ex);
+        }
+
+        // The whole point of the tool is that nothing gets proposed unverified, so the command is mandatory.
+        var verify = NullIfBlank(String(section, "pull_request.verify_command", "verify_command"))
+            ?? throw Invalid("pull_request.verify_command", "is required: the build or test command that must pass before a pull request is opened");
+        var target = NullIfBlank(String(section, "pull_request.target_branch", "target_branch"))
+            ?? throw Invalid("pull_request.target_branch", "is required");
+
+        var settings = new PullRequestSettings(
+            kind,
+            provider,
+            NullIfBlank(String(section, "pull_request.remote", "remote")) ?? "origin",
+            target.Trim(),
+            Bool(section, "pull_request.draft", "draft", true),
+            verify,
+            Int(section, "pull_request.verify_timeout_ms", "verify_timeout_ms", 900000, min: 1000),
+            Int(section, "pull_request.max_files", "max_files", 200, min: 1),
+            StringList(section, "pull_request.forbidden_paths", "forbidden_paths") ?? [.. DefaultForbiddenPaths]);
+
+        // A tool call produces no agent events, so a long build can look like a stalled session.
+        if (claude.StallTimeoutMs > 0 && settings.VerifyTimeoutMs + PullRequestTool.OverheadMs >= claude.StallTimeoutMs)
+        {
+            warnings.Add($"pull_request.verify_timeout_ms ({settings.VerifyTimeoutMs}) plus {PullRequestTool.OverheadMs} ms for the checks reaches claude.stall_timeout_ms ({claude.StallTimeoutMs}); "
+                + "a long verification can get the session stopped as stalled");
+        }
+
+        return settings;
     }
 
     /// <summary><c>~</c> expansion, <c>$VAR</c>/<c>${VAR}</c> expansion, relative-to-workflow, absolute normalization.</summary>

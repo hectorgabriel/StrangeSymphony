@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Symphony.Core.Agents;
 using Symphony.Core.Domain;
 using Symphony.Core.Templating;
+using Symphony.Core.Tracker;
 using Symphony.Core.Workflow;
 using Symphony.Core.Workspaces;
 
@@ -14,7 +15,11 @@ public sealed class WorkerFailedException(string reason, Exception? inner = null
 /// One worker attempt: workspace + hooks + prompt + multi-turn agent session (SPEC 10.7, 16.5).
 /// Normal return means a clean exit; any failure throws.
 /// </summary>
-public sealed class AgentWorker(WorkspaceManager workspaces, IAgentSessionFactory agents, ILogger<AgentWorker> logger)
+public sealed class AgentWorker(
+    WorkspaceManager workspaces,
+    IAgentSessionFactory agents,
+    ILogger<AgentWorker> logger,
+    IWorkspaceToolsFactory? workspaceTools = null)
 {
     public async Task RunAsync(
         Issue issue,
@@ -69,10 +74,24 @@ public sealed class AgentWorker(WorkspaceManager workspaces, IAgentSessionFactor
         // Invariant 1: the agent runs only in the per-issue workspace under the root.
         WorkspaceManager.EnsureInsideRoot(config.WorkspaceRoot, workspace.Path);
 
+        // Workspace tools are bound to this workspace, so they live exactly as long as the session.
+        ToolAugmentedTracker? tools;
+        try
+        {
+            tools = workspaceTools?.Create(config, workspace.Path, issue) is { } extra
+                ? new ToolAugmentedTracker(workflow.Tracker, extra)
+                : null;
+        }
+        catch (Exception ex)
+        {
+            throw new WorkerFailedException($"workspace tools error: {ex.Message}", ex);
+        }
+
+        using var toolsScope = tools;
         IAgentSession session;
         try
         {
-            session = await agents.StartAsync(new AgentSessionRequest(issue, workspace.Path, config, workflow.Tracker), onEvent, ct);
+            session = await agents.StartAsync(new AgentSessionRequest(issue, workspace.Path, config, (ITrackerAdapter?)tools ?? workflow.Tracker), onEvent, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
