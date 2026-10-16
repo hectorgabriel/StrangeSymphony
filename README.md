@@ -71,3 +71,4 @@ SYMPHONY_REAL_CLAUDE=1 dotnet test --filter RealIntegration # real claude CLI sm
 - [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md): how the Codex protocol maps to Claude Code, the trust and safety posture, and implementation-defined behavior
 - [docs/adapters/azure-devops.md](docs/adapters/azure-devops.md): the Azure DevOps adapter profile (config keys, mapping, tools, errors)
 - [docs/adapters/wrike.md](docs/adapters/wrike.md): the Wrike adapter profile
+- [docs/sdlc-pipeline.md](docs/sdlc-pipeline.md): one Wrike queue through analysis, development, testing and documentation, with the role agents and BossDream gates
