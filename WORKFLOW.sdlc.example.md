@@ -14,7 +14,7 @@ tracker:
   # En Revision, Documentado, Requiere Informacion) must stay out of this list, or the next
   # role starts before anyone reviews the previous one.
   active_states: [Por Analizar, Por Desarrollar, Plan Aprobado, Por Probar, Por Documentar]
-  terminal_states: [Completed, Cancelled]
+  terminal_states: [Completado, Cancelado]
 
 polling:
   interval_ms: 30000

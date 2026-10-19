@@ -25,16 +25,16 @@ Create these statuses in the queue's Wrike workflow. Only the **agent** rows go 
 | Con Defectos | person | Triage the defects | Plan Aprobado (fix) or En Revision |
 | En Revision | person | Open the PR in Azure DevOps, review and merge into `dev` | Por Documentar |
 | Por Documentar | agent: documentador | End-user manual from what is in `dev`, on `manual/<id>-…` | Documentado |
-| Documentado | person | Review the manual, add screenshots, export to PDF/Word | Completed |
+| Documentado | person | Review the manual, add screenshots, export to PDF/Word | Completado |
 | Requiere Informacion | person | Any agent stops here when it needs an answer; the question is in the comments | the status it came from |
-| Completed, Cancelled | — | Terminal: Symphony removes the workspace | — |
+| Completado, Cancelado | — | Terminal: Symphony removes the workspace | — |
 
 ```mermaid
 flowchart LR
   A[Por Analizar]:::agent --> B[Analizado]:::human --> C[Por Desarrollar]:::agent --> D[Plan Propuesto]:::human
   D --> E[Plan Aprobado]:::agent --> F[Por Probar]:::agent
   F -->|defects| G[Con Defectos]:::human --> E
-  F -->|clean| H[En Revision]:::human --> I[Por Documentar]:::agent --> J[Documentado]:::human --> K[Completed]
+  F -->|clean| H[En Revision]:::human --> I[Por Documentar]:::agent --> J[Documentado]:::human --> K[Completado]
   classDef agent fill:#dbeafe,stroke:#1d4ed8
   classDef human fill:#fef3c7,stroke:#b45309
 ```
