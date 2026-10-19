@@ -244,6 +244,78 @@ public class OrchestratorTests
     }
 
     [Fact]
+    public async Task Handoffs_follow_the_tracker_until_terminal_and_then_clean_the_workspace()
+    {
+        await using var h = new OrchestratorHarness();
+        h.Tracker.Put(TestIssues.Make("1"));
+        var ws = Path.Combine(h.Tmp.WorkspaceRoot, "WI-1");
+        Directory.CreateDirectory(ws);
+        h.Start();
+        await Wait.Until(() => h.Workers.Length == 1, "dispatch");
+
+        h.Tracker.Put(TestIssues.Make("1", state: "Human Review"));
+        await h.Tick();
+        await Wait.Until(() => h.Snap.Handoffs.Count == 1, "handoff");
+        Assert.Equal(("Human Review", "Human Review", false), (h.Snap.Handoffs[0].State, h.Snap.Handoffs[0].HandoffState, h.Snap.Handoffs[0].Closed));
+        Assert.True(Directory.Exists(ws));
+
+        // Reviewed and merged in the tracker: the row follows and the workspace goes.
+        h.Tracker.Put(TestIssues.Make("1", state: "Done"));
+        await h.Tick();
+        await Wait.Until(() => h.Snap.Handoffs[0].Closed && !Directory.Exists(ws), "closed + cleaned");
+        var row = h.Snap.Handoffs.Single();
+        Assert.Equal(("Done", "Human Review", "Moved to \"Human Review\""), (row.State, row.HandoffState, row.Reason));
+
+        // Closed rows are no longer polled.
+        var fetches = h.Tracker.IdFetches;
+        await h.Tick();
+        Assert.Equal(fetches, h.Tracker.IdFetches);
+        Assert.Empty(h.Workers.Skip(1));
+    }
+
+    [Fact]
+    public async Task Handoff_leaves_the_list_when_the_issue_is_active_again()
+    {
+        await using var h = new OrchestratorHarness();
+        h.Tracker.Put(TestIssues.Make("1"));
+        h.Start();
+        await Wait.Until(() => h.Workers.Length == 1, "dispatch");
+
+        h.Tracker.Put(TestIssues.Make("1", state: "Human Review"));
+        await h.Tick();
+        await Wait.Until(() => h.Snap.Handoffs.Count == 1, "handoff");
+
+        // Review sent it back: it is a candidate again, not a handoff.
+        h.Tracker.Put(TestIssues.Make("1", state: "Todo"));
+        await h.Tick();
+        await Wait.Until(() => h.Workers.Length == 2, "dispatched again");
+        Assert.Empty(h.Snap.Handoffs);
+    }
+
+    [Fact]
+    public async Task Handoff_rows_survive_a_failed_refresh_and_note_issues_out_of_scope()
+    {
+        await using var h = new OrchestratorHarness();
+        h.Tracker.Put(TestIssues.Make("1"));
+        h.Start();
+        await Wait.Until(() => h.Workers.Length == 1, "dispatch");
+        h.Tracker.Put(TestIssues.Make("1", state: "Human Review"));
+        await h.Tick();
+        await Wait.Until(() => h.Snap.Handoffs.Count == 1, "handoff");
+
+        h.Tracker.Put(TestIssues.Make("1", state: "Done"));
+        h.Tracker.FailIdFetches = true;
+        await h.Tick();
+        Assert.Equal(("Human Review", false), (h.Snap.Handoffs[0].State, h.Snap.Handoffs[0].Closed));
+
+        h.Tracker.FailIdFetches = false;
+        h.Tracker.Issues.TryRemove("1", out _);
+        await h.Tick();
+        await Wait.Until(() => h.Snap.Handoffs[0].State is null, "out of scope");
+        Assert.False(h.Snap.Handoffs[0].Closed);
+    }
+
+    [Fact]
     public void Hold_reasons_list_only_open_blockers()
     {
         static bool Terminal(string s) => s == "Done";

@@ -57,7 +57,11 @@ public sealed record CandidateRow(
     string Status,
     string Reason);
 
-/// <summary>An issue Symphony recently let go of, newest first; <see cref="State"/> is null when it left the tracker's scope.</summary>
+/// <summary>
+/// An issue Symphony recently let go of, newest first. <see cref="State"/> is the tracker's current state,
+/// re-read on every poll until the issue reaches a terminal state (<see cref="Closed"/>); null when it left
+/// the tracker's scope. <see cref="HandoffState"/> and <see cref="Reason"/> describe the release itself.
+/// </summary>
 public sealed record HandoffRow(
     string IssueId,
     string IssueIdentifier,
@@ -65,7 +69,10 @@ public sealed record HandoffRow(
     string? Title,
     string? State,
     DateTimeOffset At,
-    string Reason);
+    string Reason,
+    string? HandoffState = null,
+    bool Closed = false,
+    DateTimeOffset? CheckedAt = null);
 
 /// <summary>The last candidate poll. Only issues in <see cref="ActiveStates"/> are fetched, so only they can appear in the queue.</summary>
 public sealed record PollInfo(DateTimeOffset? At, string? Error, IReadOnlyList<string> ActiveStates);

@@ -43,6 +43,8 @@ public sealed class Orchestrator
         public required WorkflowLease Lease { get; init; }
         /// <summary>Issue id -> run id of the live runs at tick start; results only apply to those runs.</summary>
         public required IReadOnlyDictionary<string, Guid> Runs { get; init; }
+        /// <summary>Released issues whose handoff row is still open; refreshed in the same id fetch as the runs.</summary>
+        public required HashSet<string> HandoffIds { get; init; }
         public required bool DispatchBlocked { get; init; }
         public IReadOnlyList<Issue>? Refreshed { get; set; }
         public Exception? RefreshError { get; set; }
@@ -293,6 +295,7 @@ public sealed class Orchestrator
             {
                 Lease = lease,
                 Runs = _running.Values.Where(e => e.Stop is null).ToDictionary(e => e.Issue.Id, e => e.RunId),
+                HandoffIds = _handoffs.Where(h => !h.Closed && !_claimed.Contains(h.IssueId)).Select(h => h.IssueId).ToHashSet(),
                 DispatchBlocked = error is not null,
             };
             StartFetch(() => FetchForTickAsync(fetch, ct));
@@ -311,11 +314,12 @@ public sealed class Orchestrator
     private async Task FetchForTickAsync(TickFetch fetch, CancellationToken ct)
     {
         var workflow = fetch.Lease.Workflow;
-        if (fetch.Runs.Count > 0)
+        var ids = fetch.Runs.Keys.Union(fetch.HandoffIds).ToList();
+        if (ids.Count > 0)
         {
             try
             {
-                fetch.Refreshed = await workflow.Tracker.FetchIssuesByIdsAsync(fetch.Runs.Keys.ToList(), ct);
+                fetch.Refreshed = await workflow.Tracker.FetchIssuesByIdsAsync(ids, ct);
             }
             catch (Exception ex)
             {
@@ -349,6 +353,7 @@ public sealed class Orchestrator
         try
         {
             ApplyReconcile(fetch, config);
+            RefreshHandoffs(fetch, config);
 
             if (fetch.DispatchBlocked || _store.LastError is not null)
             {
@@ -849,10 +854,59 @@ public sealed class Orchestrator
             _ => "No longer eligible: missing a required label",
         };
 
-        _handoffs.Insert(0, new HandoffRow(issueId, identifier, issue?.Url ?? url, issue?.Title, issue?.State, _time.GetUtcNow(), reason));
+        // One row per issue: a newer release replaces the older one.
+        var now = _time.GetUtcNow();
+        var closed = issue is not null && config.IsTerminalState(issue.State);
+        _handoffs.RemoveAll(h => h.IssueId == issueId);
+        _handoffs.Insert(0, new HandoffRow(issueId, identifier, issue?.Url ?? url, issue?.Title, issue?.State, now, reason, issue?.State, closed, now));
         if (_handoffs.Count > HandoffLimit)
         {
             _handoffs.RemoveAt(_handoffs.Count - 1);
+        }
+    }
+
+    /// <summary>
+    /// Follows released issues in the tracker so the board shows their current state. A row closes when the
+    /// issue reaches a terminal state, which also removes its workspace (SPEC 8.6 cleanup, otherwise only done
+    /// at startup); an issue back in an active state leaves the list, since the queue explains it from then on.
+    /// </summary>
+    private void RefreshHandoffs(TickFetch fetch, ServiceConfig config)
+    {
+        if (fetch.HandoffIds.Count == 0 || fetch.RefreshError is not null || fetch.Refreshed is not { } refreshed)
+        {
+            return;
+        }
+
+        var byId = refreshed.GroupBy(i => i.Id).ToDictionary(g => g.Key, g => g.First());
+        var now = _time.GetUtcNow();
+        for (var i = _handoffs.Count - 1; i >= 0; i--)
+        {
+            var row = _handoffs[i];
+            if (row.Closed || _claimed.Contains(row.IssueId) || !fetch.HandoffIds.Contains(row.IssueId))
+            {
+                continue;
+            }
+
+            if (!byId.TryGetValue(row.IssueId, out var issue))
+            {
+                _handoffs[i] = row with { State = null, CheckedAt = now };
+                continue;
+            }
+
+            var terminal = config.IsTerminalState(issue.State);
+            if (!terminal && config.IsActiveState(issue.State))
+            {
+                _logger.LogInformation("action=handoff outcome=reopened issue_id={IssueId} issue_identifier={IssueIdentifier} state={State}", issue.Id, issue.Identifier, issue.State);
+                _handoffs.RemoveAt(i);
+                continue;
+            }
+
+            _handoffs[i] = row with { IssueUrl = issue.Url ?? row.IssueUrl, Title = issue.Title, State = issue.State, Closed = terminal, CheckedAt = now };
+            if (terminal)
+            {
+                _logger.LogInformation("action=handoff outcome=closed issue_id={IssueId} issue_identifier={IssueIdentifier} state={State} note=removing_workspace", issue.Id, issue.Identifier, issue.State);
+                StartCleanup(issue.Identifier);
+            }
         }
     }
 

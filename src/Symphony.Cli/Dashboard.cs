@@ -162,6 +162,7 @@ const $ = id => document.getElementById(id);
 const fmt = n => new Intl.NumberFormat().format(n ?? 0);
 const short = n => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n ?? 0);
 const time = s => s ? new Date(s).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '–';
+const handoffWhy = h => h.state === h.handoff_state ? h.reason : `${h.reason}. Now ${h.state ? `"${h.state}"` : 'out of scope'}${h.closed ? ', workspace removed' : ''}`;
 const dur = s => { s = Math.round(s || 0); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; };
 const since = iso => dur((Date.now() - new Date(iso)) / 1000);
 const until = iso => { const s = (new Date(iso) - Date.now()) / 1000; return s <= 0 ? 'now' : 'in ' + dur(s); };
@@ -233,7 +234,7 @@ async function load() {
       badges: [Object.assign(el('span', 'badge live'), { innerHTML: '<span class="pulse"></span>' }), badge('clock', since(r.started_at)), badge('turns', `${r.turn_count}`), badge('bolt', short(r.tokens.total_tokens))] }));
     const retry = s.retrying.map(r => ({ ...r, title: byId.get(r.issue_id)?.title, priority: byId.get(r.issue_id)?.priority, status: 'retrying',
       why: r.error ?? 'Continuation after a clean exit', badges: [badge('retry', `Attempt ${r.attempt}`), badge('clock', until(r.due_at), 'due')] }));
-    const done = (s.handoffs ?? []).map(h => ({ ...h, status: 'handed_off', why: h.reason, badges: [badge('flag', h.state ?? 'Out of scope'), badge('clock', time(h.at))] }));
+    const done = (s.handoffs ?? []).map(h => ({ ...h, status: 'handed_off', why: handoffWhy(h), badges: [badge('flag', h.state ?? 'Out of scope'), badge('clock', time(h.at))] }));
 
     $('board').replaceChildren(
       list('Not eligible', 'Blocked, held or missing a label', queue.filter(c => ['blocked', 'held', 'missing_labels', 'invalid'].includes(c.status)).map(q), 'Nothing held back'),
@@ -499,6 +500,7 @@ const NS = 'http://www.w3.org/2000/svg';
 const fmt = n => new Intl.NumberFormat().format(n ?? 0);
 const short = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n ?? 0);
 const time = s => s ? new Date(s).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '–';
+const handoffWhy = h => h.state === h.handoff_state ? h.reason : `${h.reason}. Now ${h.state ? `"${h.state}"` : 'out of scope'}${h.closed ? ', workspace removed' : ''}`;
 const dur = s => { s = Math.round(s || 0); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; };
 const until = iso => { const s = (new Date(iso) - Date.now()) / 1000; return s <= 0 ? 'now' : 'in ' + dur(s); };
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
@@ -605,7 +607,7 @@ function render() {
   fill('held', queue.filter(c => ['blocked', 'held', 'missing_labels', 'invalid'].includes(c.status)).map(item), 'Everyone is eligible');
   fill('done', (s.handoffs ?? []).map(hh => {
     const li = el('li'), t = el('div', 't'); t.append(link(hh), ' ', hh.title ?? '(no longer visible)');
-    li.append(t, el('span', 'dir', time(hh.at)), el('div', 'why', hh.reason)); return li;
+    li.append(t, el('span', 'dir', time(hh.at)), el('div', 'why', handoffWhy(hh))); return li;
   }), 'Nothing handed off yet');
 }
 
