@@ -74,7 +74,7 @@ The role files were written for interactive use. In every stage, the workflow pr
 
 ## Known limits
 
-- **One model for every stage.** `claude.model` applies to every stage. BossDream's `models` (Opus for planning, Sonnet for code) can't be applied per status yet.
+- **Models per stage come from the workflow.** BossDream's `models` setting isn't read. Set `claude.model_by_state` instead (Opus for planning, Sonnet for code, or a self-hosted model behind a proxy); see [hybrid-models.md](hybrid-models.md).
 - **Gate cost.** The Stop hook runs the full local tier of `pipeline.json`, including Stryker if it's enabled. On Magnacero that can be slow, so start with mutation testing disabled or limited to changed files.
 - **Unscoped task gate.** Without `.claude/.active-plan`, `tasks-complete` checks every `plans/**/tasks.md`. A plan from another task left unticked on the same branch blocks this one.
 - **Architect.** The architect has no stage. Use it interactively when the analysis says a change crosses modules or hosts.

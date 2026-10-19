@@ -72,4 +72,5 @@ SYMPHONY_REAL_CLAUDE=1 dotnet test --filter RealIntegration # real claude CLI sm
 - [docs/adapters/azure-devops.md](docs/adapters/azure-devops.md): the Azure DevOps adapter profile (config keys, mapping, tools, errors)
 - [docs/adapters/wrike.md](docs/adapters/wrike.md): the Wrike adapter profile
 - [docs/sdlc-pipeline.md](docs/sdlc-pipeline.md): one Wrike queue through analysis, development, testing and documentation, with the role agents and BossDream gates
+- [docs/hybrid-models.md](docs/hybrid-models.md): a model per status with `claude.model_by_state`, and Claude plus a self-hosted model behind a routing proxy
 - [docs/pull-requests.md](docs/pull-requests.md): the `create_pull_request` tool, which opens a pull request only after the host has checked the branch and built the pushed commit

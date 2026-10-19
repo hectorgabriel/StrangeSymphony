@@ -91,6 +91,25 @@ public sealed class AgentWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task Stops_when_the_new_state_is_routed_to_another_model()
+    {
+        var wf = Workflow("claude:\n  model: opus\n  model_by_state: {In Progress: qwen}");
+        var issue = TestIssues.Make("1");
+        _tracker.Put(issue);
+        var prompts = new List<string>();
+        var factory = new FakeFactory(prompts, turn =>
+        {
+            if (turn == 1) _tracker.Put(TestIssues.Make("1", state: "In Progress"));
+            return Task.CompletedTask;
+        });
+
+        await Worker(factory).RunAsync(issue, null, wf, _ => { }, _ => { }, default);
+
+        Assert.Single(prompts);
+        Assert.True(factory.Session!.Disposed);
+    }
+
+    [Fact]
     public async Task Before_run_failure_aborts_but_after_run_still_runs()
     {
         var wf = Workflow("hooks:\n  before_run: exit 1\n  after_run: touch after_run.txt");

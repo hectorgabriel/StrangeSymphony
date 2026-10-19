@@ -55,7 +55,7 @@ public sealed class ClaudeCodeSessionFactory(IToolGateway? toolGateway, string p
             }
 
             var sessionId = Guid.NewGuid().ToString();
-            var args = ClaudeCommandLine.BuildArgs(config.Claude, sessionId, mcpConfigPath, hasTools, $"{request.Issue.Identifier}: {request.Issue.Title}");
+            var args = ClaudeCommandLine.BuildArgs(config.Claude, request.Issue.State, sessionId, mcpConfigPath, hasTools, $"{request.Issue.Identifier}: {request.Issue.Title}");
             var psi = ClaudeCommandLine.StartInfo(config.Claude.Command, args, cwd, config.Hooks.Shell);
             foreach (var name in request.Tracker.SecretEnvironmentNames().Concat(AlwaysStripped))
             {
@@ -171,7 +171,7 @@ public sealed class ClaudeCodeSession : IAgentSession
         {
             ProcessId = Pid,
             ThreadId = sessionId,
-            Message = $"claude session {sessionId} started in {_request.WorkspacePath}",
+            Message = $"claude session {sessionId} started in {_request.WorkspacePath} with model {_request.Config.Claude.ModelFor(_request.Issue.State) ?? "default"}",
         });
         return Task.CompletedTask;
     }

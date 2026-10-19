@@ -1,3 +1,5 @@
+using Symphony.Core.Domain;
+
 namespace Symphony.Core.Config;
 
 public sealed record TrackerSettings(
@@ -30,6 +32,8 @@ public sealed record AgentSettings(
 public sealed record ClaudeSettings(
     string Command,
     string? Model,
+    // Extension: normalized state name -> model, overriding Model for issues in that state (docs/hybrid-models.md).
+    IReadOnlyDictionary<string, string> ModelByState,
     string PermissionMode,
     IReadOnlyList<string> AllowedTools,
     IReadOnlyList<string> DisallowedTools,
@@ -37,7 +41,12 @@ public sealed record ClaudeSettings(
     bool StrictMcpConfig,
     int TurnTimeoutMs,
     int ReadTimeoutMs,
-    int StallTimeoutMs);
+    int StallTimeoutMs)
+{
+    /// <summary>The model a session for an issue in <paramref name="state"/> runs with; null means Claude Code's default.</summary>
+    public string? ModelFor(string? state) =>
+        ModelByState.TryGetValue(StateNames.Normalize(state), out var model) ? model : Model;
+}
 
 /// <summary>
 /// Front matter key <c>pull_request</c> (extension): lets the agent open a pull request through the

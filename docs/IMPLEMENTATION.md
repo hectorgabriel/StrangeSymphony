@@ -21,7 +21,7 @@ The spec targets the Codex app-server protocol (§10). This port runs **Claude C
 | Token accounting | Each `result.usage` covers its own turn. Symphony sums them into absolute session totals (input = `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`), and the orchestrator applies only the change since the last report. |
 | Rate limits | The latest `rate_limit_event.rate_limit_info`, shown as `rate_limits` in the API. |
 
-Other `claude` settings: `model`, `permission_mode` (default `acceptEdits`), `allowed_tools` (default `[]`), `disallowed_tools` (default `[AskUserQuestion]`), `extra_args`, `strict_mcp_config` (default `true`), `turn_timeout_ms` (3600000), `read_timeout_ms` (5000; reserved), `stall_timeout_ms` (300000, where `<= 0` turns it off).
+Other `claude` settings: `model`, `model_by_state` (a model per status; see [hybrid-models.md](hybrid-models.md)), `permission_mode` (default `acceptEdits`), `allowed_tools` (default `[]`), `disallowed_tools` (default `[AskUserQuestion]`), `extra_args`, `strict_mcp_config` (default `true`), `turn_timeout_ms` (3600000), `read_timeout_ms` (5000; reserved), `stall_timeout_ms` (300000, where `<= 0` turns it off).
 
 The default `stall_timeout_ms` of 5 minutes can be too short for repositories whose builds or tests run long without printing anything. Raise it (the example uses 15 minutes).
 

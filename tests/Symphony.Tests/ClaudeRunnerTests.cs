@@ -267,6 +267,17 @@ public sealed class ClaudeCommandLineTests : IDisposable
 {
     private readonly string _dir = Directory.CreateTempSubdirectory("symphony-cmd-").FullName;
 
+    [Theory]
+    [InlineData("Todo", "opus")]
+    [InlineData("In Progress", "qwen3.8-27b-deep")]
+    public void Model_flag_follows_the_issue_state(string state, string expected)
+    {
+        var settings = new ClaudeSettings("claude", "opus", new Dictionary<string, string> { ["in progress"] = "qwen3.8-27b-deep" },
+            "acceptEdits", [], [], [], true, 1, 1, 1);
+        var args = ClaudeCommandLine.BuildArgs(settings, state, "sid", null, false, "WI-1: t");
+        Assert.Equal(expected, args[args.ToList().IndexOf("--model") + 1]);
+    }
+
     private string Touch(string name)
     {
         var path = Path.Combine(_dir, name);

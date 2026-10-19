@@ -39,6 +39,11 @@ agent:
 claude:
   command: claude
   model: sonnet
+  # A model per status (docs/hybrid-models.md), for example:
+  # model_by_state:
+  #   Por Analizar: opus
+  #   Por Desarrollar: opus
+  #   Por Documentar: qwen3.8-27b-deep   # through a routing proxy
   permission_mode: acceptEdits
   allowed_tools:
     - "Bash(git *)"
