@@ -100,6 +100,7 @@ public sealed class AgentWorker(
 
         await using var _ = session;
         var maxTurns = config.Agent.MaxTurns;
+        var sessionModel = config.Claude.ModelFor(issue.State);
         for (var turn = 1; ; turn++)
         {
             string prompt;
@@ -144,6 +145,14 @@ public sealed class AgentWorker(
             if (!config.IsActiveState(issue.State) || !Eligibility.IsRoutable(issue, config))
             {
                 logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=no_longer_active state={State}", issue.Id, issue.Identifier, issue.State);
+                return;
+            }
+
+            // A session keeps its model, so a move to a state routed elsewhere ends it; the
+            // continuation dispatch then starts a fresh session with that state's model and prompt.
+            if (!string.Equals(config.Claude.ModelFor(issue.State), sessionModel, StringComparison.Ordinal))
+            {
+                logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=model_changed state={State}", issue.Id, issue.Identifier, issue.State);
                 return;
             }
 

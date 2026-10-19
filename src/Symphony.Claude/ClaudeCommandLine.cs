@@ -11,7 +11,7 @@ public static class ClaudeCommandLine
 {
     public const string TrackerMcpServerName = "tracker";
 
-    public static IReadOnlyList<string> BuildArgs(ClaudeSettings settings, string sessionId, string? mcpConfigPath, bool hasTrackerTools, string title)
+    public static IReadOnlyList<string> BuildArgs(ClaudeSettings settings, string issueState, string sessionId, string? mcpConfigPath, bool hasTrackerTools, string title)
     {
         var args = new List<string>
         {
@@ -26,7 +26,7 @@ public static class ClaudeCommandLine
             "--name", title,
         };
 
-        if (settings.Model is { } model)
+        if (settings.ModelFor(issueState) is { } model)
         {
             args.Add("--model");
             args.Add(model);

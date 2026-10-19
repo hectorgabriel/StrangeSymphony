@@ -127,6 +127,7 @@ public sealed partial class ConfigBuilder(
         var claudeSettings = new ClaudeSettings(
             command,
             NullIfBlank(String(claude, "claude.model", "model")),
+            ModelByState(claude, activeStates, warnings),
             String(claude, "claude.permission_mode", "permission_mode") ?? "acceptEdits",
             StringList(claude, "claude.allowed_tools", "allowed_tools") ?? [],
             StringList(claude, "claude.disallowed_tools", "disallowed_tools") ?? ["AskUserQuestion"],
@@ -254,6 +255,41 @@ public sealed partial class ConfigBuilder(
             {
                 result[StateNames.Normalize(state)] = n;
             }
+        }
+
+        return result;
+    }
+
+    /// <summary><c>claude.model_by_state</c> (extension): a model per tracker state, keys normalized like state names.</summary>
+    private static Dictionary<string, string> ModelByState(IReadOnlyDictionary<string, object?> claude, IReadOnlyList<string> activeStates, List<string> warnings)
+    {
+        var result = new Dictionary<string, string>();
+        if (!claude.TryGetValue("model_by_state", out var raw) || raw is null)
+        {
+            return result;
+        }
+
+        if (raw is not Dictionary<string, object?> map)
+        {
+            throw Invalid("claude.model_by_state", "must be a map of state name to model");
+        }
+
+        foreach (var (state, value) in map)
+        {
+            // Unlike concurrency limits, a bad entry fails: silently falling back would run the stage on the wrong backend.
+            var model = value switch
+            {
+                string s when !string.IsNullOrWhiteSpace(s) => s.Trim(),
+                _ => throw Invalid($"claude.model_by_state.{state}", "must be a non-empty model name"),
+            };
+
+            var key = StateNames.Normalize(state);
+            if (!activeStates.Any(a => StateNames.Normalize(a) == key))
+            {
+                warnings.Add($"claude.model_by_state names '{state}', which is not in tracker.active_states; no session starts in that state");
+            }
+
+            result[key] = model;
         }
 
         return result;

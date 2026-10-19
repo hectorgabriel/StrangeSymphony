@@ -120,6 +120,34 @@ public class ConfigBuilderTests
         Assert.Equal(new Dictionary<string, int> { ["in progress"] = 2, ["qa"] = 3 }, c.Agent.MaxConcurrentAgentsByState);
     }
 
+    [Fact]
+    public void Model_by_state_overrides_the_default_model_per_state()
+    {
+        var c = Build("tracker: {kind: fake}\nclaude:\n  model: opus\n  model_by_state:\n    \" In Progress \": qwen3.8-27b-deep");
+        Assert.Equal("qwen3.8-27b-deep", c.Claude.ModelFor("in progress"));
+        Assert.Equal("opus", c.Claude.ModelFor("Todo"));
+        Assert.Empty(c.Warnings);
+
+        Assert.Null(Build("tracker: {kind: fake}").Claude.ModelFor("Todo"));
+    }
+
+    [Fact]
+    public void Model_by_state_warns_about_states_that_never_dispatch()
+    {
+        var c = Build("tracker: {kind: fake}\nclaude:\n  model_by_state:\n    Done: haiku");
+        Assert.Contains(c.Warnings, w => w.Contains("'Done'", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("tracker: {kind: fake}\nclaude:\n  model_by_state: [opus]")]
+    [InlineData("tracker: {kind: fake}\nclaude:\n  model_by_state:\n    Todo: \"  \"")]
+    [InlineData("tracker: {kind: fake}\nclaude:\n  model_by_state:\n    Todo: {name: opus}")]
+    public void Invalid_model_by_state_fails_validation(string yaml)
+    {
+        var ex = Assert.Throws<WorkflowException>(() => Build(yaml));
+        Assert.Equal(ConfigErrorCodes.InvalidConfig, ex.Code);
+    }
+
     [Theory]
     [InlineData("tracker: {kind: fake}\nagent:\n  max_turns: 0")]
     [InlineData("tracker: {kind: fake}\nagent:\n  max_turns: lots")]
