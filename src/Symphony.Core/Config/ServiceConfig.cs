@@ -41,7 +41,9 @@ public sealed record ClaudeSettings(
     bool StrictMcpConfig,
     int TurnTimeoutMs,
     int ReadTimeoutMs,
-    int StallTimeoutMs)
+    int StallTimeoutMs,
+    // Extension: continue the issue's last session in the same state instead of starting a new one.
+    bool Resume = true)
 {
     /// <summary>The model a session for an issue in <paramref name="state"/> runs with; null means Claude Code's default.</summary>
     public string? ModelFor(string? state) =>
@@ -63,6 +65,15 @@ public sealed record PullRequestSettings(
     int MaxFiles,
     IReadOnlyList<string> ForbiddenPaths);
 
+/// <summary>
+/// Front matter key <c>budget</c> (extension): token caps that pause work instead of letting a looping
+/// agent drain the plan. Tokens are counted as the dashboard shows them; 0 means no limit.
+/// </summary>
+public sealed record BudgetSettings(long MaxTokensPerIssue, long MaxTokensPerDay)
+{
+    public static readonly BudgetSettings None = new(0, 0);
+}
+
 public sealed record ServiceConfig(
     string WorkflowPath,
     TrackerSettings Tracker,
@@ -73,8 +84,11 @@ public sealed record ServiceConfig(
     ClaudeSettings Claude,
     int? ServerPort,
     IReadOnlyList<string> Warnings,
-    PullRequestSettings? PullRequest = null)
+    PullRequestSettings? PullRequest = null,
+    BudgetSettings? Budget = null)
 {
+    public BudgetSettings Budgets => Budget ?? BudgetSettings.None;
+
     public bool IsActiveState(string state)
     {
         var n = Domain.StateNames.Normalize(state);

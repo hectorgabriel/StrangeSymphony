@@ -18,6 +18,7 @@ public sealed class OrchestratorHarness : IAsyncDisposable
     {
         public required Issue Issue { get; init; }
         public required int? Attempt { get; init; }
+        public string? Resume { get; init; }
         public required Action<AgentEvent> Emit { get; init; }
         public required CancellationToken Token { get; init; }
         public TaskCompletionSource Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -29,9 +30,9 @@ public sealed class OrchestratorHarness : IAsyncDisposable
     public FakeTracker Tracker { get; } = new();
     public FakeTimeProvider Time { get; } = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture));
     public WorkflowStore Store { get; }
-    public Orchestrator Orchestrator { get; }
+    public Orchestrator Orchestrator { get; private set; }
     public ConcurrentQueue<WorkerControl> Dispatches { get; } = new();
-    private readonly CancellationTokenSource _stop = new();
+    private CancellationTokenSource _stop = new();
     private Task? _run;
 
     public OrchestratorHarness(string extraYaml = "", ITrackerAdapterFactory? factory = null)
@@ -41,15 +42,29 @@ public sealed class OrchestratorHarness : IAsyncDisposable
             ? Tmp.Store(Tracker)
             : new WorkflowStore(Tmp.Path, new ConfigBuilder([factory], _ => null), _ => null, NullLoggerFactory.Instance);
         Store.LoadInitial();
-        Orchestrator = new Orchestrator(Store, new WorkspaceManager(NullLogger<WorkspaceManager>.Instance), RunWorker, Time, NullLogger<Orchestrator>.Instance);
+        Orchestrator = NewOrchestrator();
+    }
+
+    private Orchestrator NewOrchestrator() =>
+        new(Store, new WorkspaceManager(NullLogger<WorkspaceManager>.Instance), RunWorker, Time, NullLogger<Orchestrator>.Instance);
+
+    /// <summary>Stops the loop as a shutdown would and starts a new orchestrator on the same workflow and workspace root.</summary>
+    public async Task RestartAsync()
+    {
+        await _stop.CancelAsync();
+        if (_run is not null) await _run.WaitAsync(TimeSpan.FromSeconds(10));
+        _stop.Dispose();
+        _stop = new CancellationTokenSource();
+        Orchestrator = NewOrchestrator();
+        Start();
     }
 
     public static string Yaml(string extra) =>
         $"tracker:\n  kind: fake\npolling:\n  interval_ms: 600000\nworkspace:\n  root: \"{{ROOT}}\"\n{extra}";
 
-    private async Task RunWorker(Issue issue, int? attempt, EffectiveWorkflow wf, Action<AgentEvent> onEvent, Action<string> onWorkspace, CancellationToken ct)
+    private async Task RunWorker(Issue issue, int? attempt, string? resume, EffectiveWorkflow wf, Action<AgentEvent> onEvent, Action<string> onWorkspace, CancellationToken ct)
     {
-        var control = new WorkerControl { Issue = issue, Attempt = attempt, Emit = onEvent, Token = ct };
+        var control = new WorkerControl { Issue = issue, Attempt = attempt, Resume = resume, Emit = onEvent, Token = ct };
         Dispatches.Enqueue(control);
         await control.Done.Task.WaitAsync(ct);
     }

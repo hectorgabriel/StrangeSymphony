@@ -21,9 +21,20 @@ public sealed class AgentWorker(
     ILogger<AgentWorker> logger,
     IWorkspaceToolsFactory? workspaceTools = null)
 {
+    public Task RunAsync(
+        Issue issue,
+        int? attempt,
+        EffectiveWorkflow workflow,
+        Action<AgentEvent> onEvent,
+        Action<string> onWorkspace,
+        CancellationToken ct) =>
+        RunAsync(issue, attempt, null, workflow, onEvent, onWorkspace, ct);
+
+    /// <param name="resumeSessionId">The issue's earlier session to continue; ignored when the workspace is new.</param>
     public async Task RunAsync(
         Issue issue,
         int? attempt,
+        string? resumeSessionId,
         EffectiveWorkflow workflow,
         Action<AgentEvent> onEvent,
         Action<string> onWorkspace,
@@ -50,7 +61,8 @@ public sealed class AgentWorker(
                 throw new WorkerFailedException("before_run hook error");
             }
 
-            await RunSessionAsync(issue, attempt, workflow, workspace, onEvent, ct);
+            // A session belongs to the workspace it ran in; a new workspace has nothing to continue.
+            await RunSessionAsync(issue, attempt, workspace.CreatedNow ? null : resumeSessionId, workflow, workspace, onEvent, ct);
         }
         finally
         {
@@ -65,6 +77,7 @@ public sealed class AgentWorker(
     private async Task RunSessionAsync(
         Issue issue,
         int? attempt,
+        string? resume,
         EffectiveWorkflow workflow,
         Workspace workspace,
         Action<AgentEvent> onEvent,
@@ -88,81 +101,118 @@ public sealed class AgentWorker(
         }
 
         using var toolsScope = tools;
-        IAgentSession session;
-        try
+        async Task<IAgentSession> StartAsync(string? resumeId)
         {
-            session = await agents.StartAsync(new AgentSessionRequest(issue, workspace.Path, config, (ITrackerAdapter?)tools ?? workflow.Tracker), onEvent, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            throw new WorkerFailedException($"agent session startup error: {ex.Message}", ex);
-        }
-
-        await using var _ = session;
-        var maxTurns = config.Agent.MaxTurns;
-        var sessionModel = config.Claude.ModelFor(issue.State);
-        for (var turn = 1; ; turn++)
-        {
-            string prompt;
             try
             {
-                prompt = turn == 1
-                    ? PromptRenderer.Render(workflow.PromptTemplate, issue, attempt)
-                    : ContinuationPrompt(issue, turn, maxTurns);
-            }
-            catch (Exception ex)
-            {
-                throw new WorkerFailedException($"prompt error: {ex.Message}", ex);
-            }
-
-            onEvent(new AgentEvent(AgentEventNames.TurnStarted, DateTimeOffset.UtcNow) { TurnId = turn.ToString(CultureInfo.InvariantCulture), Message = $"turn {turn}/{maxTurns}" });
-            try
-            {
-                await session.RunTurnAsync(prompt, issue, ct);
-            }
-            catch (AgentException ex)
-            {
-                throw new WorkerFailedException($"agent turn error: {ex.Code}: {ex.Message}", ex);
-            }
-
-            IReadOnlyList<Issue> refreshed;
-            try
-            {
-                refreshed = await workflow.Tracker.FetchIssuesByIdsAsync([issue.Id], ct);
+                return await agents.StartAsync(new AgentSessionRequest(issue, workspace.Path, config, (ITrackerAdapter?)tools ?? workflow.Tracker, resumeId), onEvent, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                throw new WorkerFailedException($"issue state refresh error: {ex.Message}", ex);
+                throw new WorkerFailedException($"agent session startup error: {ex.Message}", ex);
             }
+        }
 
-            if (refreshed.Count == 0)
+        IAgentSession? session = await StartAsync(resume);
+        try
+        {
+            var maxTurns = config.Agent.MaxTurns;
+            var sessionModel = config.Claude.ModelFor(issue.State);
+            for (var turn = 1; ; turn++)
             {
-                logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=issue_not_visible", issue.Id, issue.Identifier);
-                return;
+                string prompt;
+                try
+                {
+                    prompt = turn > 1 ? ContinuationPrompt(issue, turn, maxTurns)
+                        : resume is not null ? ResumePrompt(issue)
+                        : PromptRenderer.Render(workflow.PromptTemplate, issue, attempt);
+                }
+                catch (Exception ex)
+                {
+                    throw new WorkerFailedException($"prompt error: {ex.Message}", ex);
+                }
+
+                onEvent(new AgentEvent(AgentEventNames.TurnStarted, DateTimeOffset.UtcNow) { TurnId = turn.ToString(CultureInfo.InvariantCulture), Message = $"turn {turn}/{maxTurns}" });
+                try
+                {
+                    await session.RunTurnAsync(prompt, issue, ct);
+                }
+                catch (AgentException ex) when (turn == 1 && resume is not null && !ct.IsCancellationRequested
+                    && ex.Code is AgentErrorCodes.PortExit or AgentErrorCodes.TurnFailed)
+                {
+                    // The saved session is gone or unusable (deleted, another machine, too long): start over once.
+                    logger.LogWarning("action=worker outcome=resume_failed issue_id={IssueId} issue_identifier={IssueIdentifier} session_id={SessionId} reason={Reason} note=starting_new_session",
+                        issue.Id, issue.Identifier, resume, ex.Message);
+                    onEvent(new AgentEvent(AgentEventNames.Notification, DateTimeOffset.UtcNow) { Message = $"could not resume session {resume}; starting a new one" });
+                    var old = session;
+                    session = null;
+                    await old.DisposeAsync();
+                    resume = null;
+                    session = await StartAsync(null);
+                    turn = 0;
+                    continue;
+                }
+                catch (AgentException ex)
+                {
+                    throw new WorkerFailedException($"agent turn error: {ex.Code}: {ex.Message}", ex);
+                }
+
+                IReadOnlyList<Issue> refreshed;
+                try
+                {
+                    refreshed = await workflow.Tracker.FetchIssuesByIdsAsync([issue.Id], ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    throw new WorkerFailedException($"issue state refresh error: {ex.Message}", ex);
+                }
+
+                if (refreshed.Count == 0)
+                {
+                    logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=issue_not_visible", issue.Id, issue.Identifier);
+                    return;
+                }
+
+                issue = refreshed[0];
+                if (!config.IsActiveState(issue.State) || !Eligibility.IsRoutable(issue, config))
+                {
+                    logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=no_longer_active state={State}", issue.Id, issue.Identifier, issue.State);
+                    return;
+                }
+
+                // A session keeps its model, so a move to a state routed elsewhere ends it; the
+                // continuation dispatch then starts a fresh session with that state's model and prompt.
+                if (!string.Equals(config.Claude.ModelFor(issue.State), sessionModel, StringComparison.Ordinal))
+                {
+                    logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=model_changed state={State}", issue.Id, issue.Identifier, issue.State);
+                    return;
+                }
+
+                if (turn >= maxTurns)
+                {
+                    logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=max_turns max_turns={MaxTurns}", issue.Id, issue.Identifier, maxTurns);
+                    return;
+                }
             }
-
-            issue = refreshed[0];
-            if (!config.IsActiveState(issue.State) || !Eligibility.IsRoutable(issue, config))
+        }
+        finally
+        {
+            if (session is not null)
             {
-                logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=no_longer_active state={State}", issue.Id, issue.Identifier, issue.State);
-                return;
-            }
-
-            // A session keeps its model, so a move to a state routed elsewhere ends it; the
-            // continuation dispatch then starts a fresh session with that state's model and prompt.
-            if (!string.Equals(config.Claude.ModelFor(issue.State), sessionModel, StringComparison.Ordinal))
-            {
-                logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=model_changed state={State}", issue.Id, issue.Identifier, issue.State);
-                return;
-            }
-
-            if (turn >= maxTurns)
-            {
-                logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=max_turns max_turns={MaxTurns}", issue.Id, issue.Identifier, maxTurns);
-                return;
+                await session.DisposeAsync();
             }
         }
     }
+
+    /// <summary>First turn of a resumed session: the task prompt and the work so far are already in its history.</summary>
+    public static string ResumePrompt(Issue issue) =>
+        $"""
+        Symphony resumed this session for {issue.Identifier}: {issue.Title}.
+        The previous run ended before the work item left state "{issue.State}" (it was interrupted, failed or ran
+        out of turns), so the task is not finished. Your instructions and progress are earlier in this conversation.
+        Check the workspace first, since the last step may be incomplete. Then finish the remaining work and move
+        the work item to the workflow's handoff state when done.
+        """;
 
     /// <summary>Continuation guidance only; the original task prompt is already in thread history (SPEC 7.1).</summary>
     public static string ContinuationPrompt(Issue issue, int turn, int maxTurns) =>

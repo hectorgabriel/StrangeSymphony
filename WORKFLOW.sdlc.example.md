@@ -56,6 +56,11 @@ claude:
   disallowed_tools: [AskUserQuestion, WebFetch]
   stall_timeout_ms: 900000
 
+# Token caps (0 or absent = no limit). Counted as the Metrics page shows them, cache reads included.
+# budget:
+#   max_tokens_per_issue: 50000000
+#   max_tokens_per_day: 300000000
+
 server:
   port: 4511
 ---

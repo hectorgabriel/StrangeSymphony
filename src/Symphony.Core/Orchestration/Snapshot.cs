@@ -45,7 +45,7 @@ public sealed record IssueDetail(
 
 /// <summary>
 /// An active-state candidate from the last poll and why it is or isn't running. <see cref="Status"/> is one of
-/// running, retrying, claimed, ready, waiting, blocked, held, missing_labels, invalid.
+/// running, retrying, claimed, ready, waiting, blocked, held, missing_labels, invalid, paused (over a token budget).
 /// </summary>
 public sealed record CandidateRow(
     string IssueId,
@@ -88,6 +88,7 @@ public sealed record RuntimeSnapshot(
     IReadOnlyDictionary<string, IssueDetail> Issues,
     IReadOnlyList<CandidateRow> Queue,
     PollInfo LastPoll,
-    IReadOnlyList<HandoffRow> Handoffs);
+    IReadOnlyList<HandoffRow> Handoffs,
+    BudgetStatus? Budget = null);
 
 public sealed record RefreshResult(bool Queued, bool Coalesced, DateTimeOffset RequestedAt);

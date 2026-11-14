@@ -135,7 +135,14 @@ public sealed partial class ConfigBuilder(
             Bool(claude, "claude.strict_mcp_config", "strict_mcp_config", true),
             Int(claude, "claude.turn_timeout_ms", "turn_timeout_ms", 3600000, min: 1),
             Int(claude, "claude.read_timeout_ms", "read_timeout_ms", 5000, min: 1),
-            Int(claude, "claude.stall_timeout_ms", "stall_timeout_ms", 300000, min: int.MinValue));
+            Int(claude, "claude.stall_timeout_ms", "stall_timeout_ms", 300000, min: int.MinValue),
+            Bool(claude, "claude.resume", "resume", true));
+
+        // budget (extension)
+        var budget = Section(root, "budget");
+        var budgetSettings = new BudgetSettings(
+            Long(budget, "budget.max_tokens_per_issue", "max_tokens_per_issue"),
+            Long(budget, "budget.max_tokens_per_day", "max_tokens_per_day"));
 
         // server (SPEC 13.7 extension)
         var server = Section(root, "server");
@@ -153,7 +160,8 @@ public sealed partial class ConfigBuilder(
             claudeSettings,
             port,
             warnings,
-            pullRequest);
+            pullRequest,
+            budgetSettings);
     }
 
     /// <summary><c>pull_request</c> (extension; docs/pull-requests.md). Absent means the agent gets no PR tool.</summary>
@@ -337,6 +345,19 @@ public sealed partial class ConfigBuilder(
         if (!TryInt(v, out var n)) throw Invalid(field, "must be an integer");
         if (n < min) throw Invalid(field, $"must be >= {min}");
         return n;
+    }
+
+    /// <summary>A non-negative count; absent means 0. Underscores are allowed as digit separators (<c>5_000_000</c>).</summary>
+    private static long Long(IReadOnlyDictionary<string, object?> map, string field, string key)
+    {
+        if (!map.TryGetValue(key, out var v) || v is null) return 0;
+        var n = v switch
+        {
+            long l => l,
+            string s when long.TryParse(s.Trim().Replace("_", ""), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) => parsed,
+            _ => throw Invalid(field, "must be a whole number of tokens"),
+        };
+        return n >= 0 ? n : throw Invalid(field, "must be >= 0");
     }
 
     private static bool Bool(IReadOnlyDictionary<string, object?> map, string field, string key, bool fallback)
