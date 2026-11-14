@@ -54,8 +54,9 @@ public sealed class ClaudeCodeSessionFactory(IToolGateway? toolGateway, string p
                 mcpConfigPath = WriteMcpConfig(endpoint);
             }
 
-            var sessionId = Guid.NewGuid().ToString();
-            var args = ClaudeCommandLine.BuildArgs(config.Claude, request.Issue.State, sessionId, mcpConfigPath, hasTools, $"{request.Issue.Identifier}: {request.Issue.Title}");
+            var sessionId = request.ResumeSessionId ?? Guid.NewGuid().ToString();
+            var args = ClaudeCommandLine.BuildArgs(config.Claude, request.Issue.State, sessionId, mcpConfigPath, hasTools, $"{request.Issue.Identifier}: {request.Issue.Title}",
+                resume: request.ResumeSessionId is not null);
             var psi = ClaudeCommandLine.StartInfo(config.Claude.Command, args, cwd, config.Hooks.Shell);
             foreach (var name in request.Tracker.SecretEnvironmentNames().Concat(AlwaysStripped))
             {
@@ -171,7 +172,7 @@ public sealed class ClaudeCodeSession : IAgentSession
         {
             ProcessId = Pid,
             ThreadId = sessionId,
-            Message = $"claude session {sessionId} started in {_request.WorkspacePath} with model {_request.Config.Claude.ModelFor(_request.Issue.State) ?? "default"}",
+            Message = $"claude session {sessionId} {(_request.ResumeSessionId is null ? "started" : "resumed")} in {_request.WorkspacePath} with model {_request.Config.Claude.ModelFor(_request.Issue.State) ?? "default"}",
         });
         return Task.CompletedTask;
     }
@@ -245,7 +246,10 @@ public sealed class ClaudeCodeSession : IAgentSession
                 var subtype = Str(message["subtype"]);
                 if (subtype == "init" && Str(message["session_id"]) is { } sid)
                 {
+                    // The id Claude Code reports is the one a later resume needs.
                     ThreadId = sid;
+                    _onEvent(new AgentEvent(AgentEventNames.OtherMessage, DateTimeOffset.UtcNow) { ProcessId = Pid, ThreadId = sid, Message = $"system:{subtype}" });
+                    return false;
                 }
 
                 Emit(AgentEventNames.OtherMessage, $"system:{subtype}");

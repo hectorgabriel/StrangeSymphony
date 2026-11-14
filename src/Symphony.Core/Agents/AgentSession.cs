@@ -61,7 +61,9 @@ public sealed record AgentSessionRequest(
     Issue Issue,
     string WorkspacePath,
     ServiceConfig Config,
-    ITrackerAdapter Tracker);
+    ITrackerAdapter Tracker,
+    // The earlier session of this issue to continue, when there is one; null starts a new session.
+    string? ResumeSessionId = null);
 
 public interface IAgentSession : IAsyncDisposable
 {

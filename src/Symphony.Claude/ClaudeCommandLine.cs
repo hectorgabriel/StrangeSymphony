@@ -11,7 +11,7 @@ public static class ClaudeCommandLine
 {
     public const string TrackerMcpServerName = "tracker";
 
-    public static IReadOnlyList<string> BuildArgs(ClaudeSettings settings, string issueState, string sessionId, string? mcpConfigPath, bool hasTrackerTools, string title)
+    public static IReadOnlyList<string> BuildArgs(ClaudeSettings settings, string issueState, string sessionId, string? mcpConfigPath, bool hasTrackerTools, string title, bool resume = false)
     {
         var args = new List<string>
         {
@@ -19,7 +19,8 @@ public static class ClaudeCommandLine
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
-            "--session-id", sessionId,
+            // --resume continues the session under the same id; --session-id starts a new one with it.
+            resume ? "--resume" : "--session-id", sessionId,
             "--permission-mode", settings.PermissionMode,
             // Headless: anything that would prompt is denied instead of waiting (SPEC 10.5 "never stall").
             "--permission-prompts", "none",

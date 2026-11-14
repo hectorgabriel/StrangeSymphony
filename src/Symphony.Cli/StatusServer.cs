@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -53,7 +54,10 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
 
         _app.MapGet("/", () => Results.Content(Dashboard.Html, "text/html; charset=utf-8"));
         _app.MapGet("/score", () => Results.Content(Dashboard.ScoreHtml, "text/html; charset=utf-8"));
+        _app.MapGet("/line", () => Results.Content(LinePage.Html, "text/html; charset=utf-8"));
         _app.MapGet("/api/v1/state", () => Snapshot(s => Json(StateJson(s))));
+        // A literal segment wins over {identifier}, so an issue named "metrics" is not reachable by name.
+        _app.MapGet("/api/v1/metrics", () => Json(MetricsJson(orchestrator.GetMetrics())));
         _app.MapPost("/api/v1/refresh", () =>
         {
             var r = orchestrator.RequestRefresh();
@@ -95,6 +99,10 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
         }
     }
 
+    private static readonly JsonSerializerOptions SnakeCase = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+
+    public static JsonNode MetricsJson(MetricsReport report) => JsonSerializer.SerializeToNode(report, SnakeCase)!;
+
     public static JsonObject StateJson(RuntimeSnapshot s) => new()
     {
         ["generated_at"] = s.GeneratedAt.ToString("O"),
@@ -110,6 +118,7 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
         },
         ["rate_limits"] = s.RateLimits?.DeepClone(),
         ["workflow_error"] = s.WorkflowError,
+        ["budget"] = s.Budget is null ? null : JsonSerializer.SerializeToNode(s.Budget, SnakeCase),
         ["last_poll"] = new JsonObject
         {
             ["at"] = s.LastPoll.At?.ToString("O"),
