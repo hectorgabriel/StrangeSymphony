@@ -53,6 +53,8 @@ The prompt for each stage contains a `/bossdream-mode <mode>` line. BossDream's 
 | Por Probar | `tester.md` | `implement` | Same gates for the tests the agent adds |
 | Por Documentar | `documentador.md` | `document` | Code edits are blocked |
 
+On top of BossDream, the workflow's `gates` make Symphony itself check each hand-off: the branch is pushed, and before Por Probar and En Revision the pushed commit builds and its tests pass. BossDream runs inside the agent's session; a Symphony gate runs on the host, outside the agent's reach. See [verification-gates.md](verification-gates.md).
+
 The developer agent's rule "present the task list and wait for approval" becomes the Por Desarrollar → Plan Propuesto → Plan Aprobado round trip. BossDream's `tasks-complete` gate then makes sure every approved task is ticked before the session can finish.
 
 ## Overrides the prompt applies to the role files

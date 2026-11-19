@@ -149,6 +149,7 @@ public sealed partial class ConfigBuilder(
         int? port = server.ContainsKey("port") ? Int(server, "server.port", "port", 0, min: 0) : null;
 
         var pullRequest = PullRequest(root, claudeSettings, warnings);
+        var gates = Gates(root, claudeSettings, warnings);
 
         return new ServiceConfig(
             Path.GetFullPath(workflowPath),
@@ -161,7 +162,81 @@ public sealed partial class ConfigBuilder(
             port,
             warnings,
             pullRequest,
-            budgetSettings);
+            budgetSettings,
+            gates);
+    }
+
+    /// <summary>Time a gate may use on top of its commands' <c>timeout_ms</c>, for the git checks.</summary>
+    public const int GateOverheadMs = 120000;
+
+    /// <summary><c>gates</c> (extension; docs/verification-gates.md): target state name -> host-side checks.</summary>
+    private static Dictionary<string, GateSettings> Gates(
+        IReadOnlyDictionary<string, object?> root, ClaudeSettings claude, List<string> warnings)
+    {
+        var result = new Dictionary<string, GateSettings>();
+        if (!root.TryGetValue("gates", out var raw) || raw is null)
+        {
+            return result;
+        }
+
+        if (raw is not Dictionary<string, object?> map)
+        {
+            throw Invalid("gates", "must be a map of target state name to gate");
+        }
+
+        foreach (var (state, value) in map)
+        {
+            var field = $"gates.{state}";
+            if (string.IsNullOrWhiteSpace(state))
+            {
+                throw Invalid("gates", "has an empty state name");
+            }
+
+            // A misspelt gate would let the agent through unchecked, so every entry must be well formed.
+            if (value is not Dictionary<string, object?> gate)
+            {
+                throw Invalid(field, "must be a map with 'run' and/or 'require_pushed'");
+            }
+
+            var unknown = gate.Keys.Except(["run", "require_pushed", "remote", "timeout_ms"], StringComparer.Ordinal).ToList();
+            if (unknown.Count > 0)
+            {
+                throw Invalid(field, $"has unknown key(s) {string.Join(", ", unknown)} (allowed: run, require_pushed, remote, timeout_ms)");
+            }
+
+            List<string> run = gate.TryGetValue("run", out var r) ? r switch
+            {
+                null => [],
+                string s => [s],
+                List<object?> => StringList(gate, $"{field}.run", "run")!,
+                _ => throw Invalid($"{field}.run", "must be a command or a list of commands"),
+            } : [];
+            if (run.Any(string.IsNullOrWhiteSpace))
+            {
+                throw Invalid($"{field}.run", "must not contain empty commands");
+            }
+
+            var settings = new GateSettings(
+                state.Trim(),
+                run,
+                Bool(gate, $"{field}.require_pushed", "require_pushed", true),
+                NullIfBlank(String(gate, $"{field}.remote", "remote"))?.Trim() ?? "origin",
+                Int(gate, $"{field}.timeout_ms", "timeout_ms", 900000, min: 1000));
+            if (settings.Run.Count == 0 && !settings.RequirePushed)
+            {
+                throw Invalid(field, "checks nothing: give it 'run' commands or leave 'require_pushed' on");
+            }
+
+            if (claude.StallTimeoutMs > 0 && settings.Run.Count > 0 && settings.TimeoutMs + GateOverheadMs >= claude.StallTimeoutMs)
+            {
+                warnings.Add($"{field}.timeout_ms ({settings.TimeoutMs}) plus {GateOverheadMs} ms for the git checks reaches claude.stall_timeout_ms ({claude.StallTimeoutMs}); "
+                    + "a long gate can get the session stopped as stalled");
+            }
+
+            result[StateNames.Normalize(state)] = settings;
+        }
+
+        return result;
     }
 
     /// <summary><c>pull_request</c> (extension; docs/pull-requests.md). Absent means the agent gets no PR tool.</summary>

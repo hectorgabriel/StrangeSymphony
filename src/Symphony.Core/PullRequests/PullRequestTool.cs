@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using Symphony.Core.Agents;
@@ -16,20 +15,23 @@ namespace Symphony.Core.PullRequests;
 /// the host has checked that the branch is committed and pushed, that its diff carries no build output,
 /// and that <see cref="PullRequestSettings.VerifyCommand"/> succeeds on exactly that commit. The agent
 /// can't skip a step or vouch for one; it only gets the reason back when one fails.
+/// The verify command builds code the agent wrote, so it runs without <paramref name="hostSecrets"/> and
+/// the provider's own credentials in its environment.
 /// </summary>
 public sealed class PullRequestTool(
     PullRequestSettings settings,
     IPullRequestProvider provider,
     string workspacePath,
     string shell,
-    ILogger<PullRequestTool> logger) : IAgentToolSet
+    ILogger<PullRequestTool> logger,
+    IReadOnlyList<string>? hostSecrets = null) : IAgentToolSet
 {
     public const string Name = "create_pull_request";
 
     /// <summary>Time allowed for the checks and the provider calls on top of the verify command.</summary>
     public const int OverheadMs = 180000;
 
-    private const int GitTimeoutMs = 120000;
+    private const int GitTimeoutMs = GitCli.DefaultTimeoutMs;
     private const int MaxListedPaths = 10;
 
     public IReadOnlyList<AgentToolSpec> Specs =>
@@ -160,7 +162,8 @@ public sealed class PullRequestTool(
         logger.LogInformation("action=pull_request outcome=verifying issue_identifier={IssueIdentifier} branch={Branch} commit={Commit} files={Files}",
             issue.Identifier, branch, Short(head), files.Length);
         var watch = Stopwatch.StartNew();
-        var verify = await ShellRunner.RunAsync(settings.VerifyCommand, workspacePath, settings.VerifyTimeoutMs, ct, shell, keepTail: true);
+        var verify = await ShellRunner.RunAsync(settings.VerifyCommand, workspacePath, settings.VerifyTimeoutMs, ct, shell, keepTail: true,
+            removeEnvironment: (hostSecrets ?? []).Concat(provider.SecretEnvironmentNames));
         watch.Stop();
         var seconds = (int)Math.Round(watch.Elapsed.TotalSeconds);
         if (!verify.Succeeded)
@@ -255,60 +258,17 @@ public sealed class PullRequestTool(
 
     private async Task<string> GitAsync(CancellationToken ct, params string[] args)
     {
-        var psi = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = workspacePath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true,
-            StandardOutputEncoding = new UTF8Encoding(false),
-            StandardErrorEncoding = new UTF8Encoding(false),
-        };
-        foreach (var arg in args) psi.ArgumentList.Add(arg);
-        // Unattended: a credential prompt must fail, not wait.
-        psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
-        psi.Environment["GCM_INTERACTIVE"] = "never";
-
-        using var process = new Process { StartInfo = psi };
         try
         {
-            process.Start();
+            return await GitCli.RunAsync(workspacePath, GitTimeoutMs, ct, args);
         }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        catch (GitException ex)
         {
-            throw new CheckFailed("git_error", $"could not start git: {ex.Message}");
+            throw new CheckFailed("git_error", ex.Message);
         }
-
-        process.StandardInput.Close();
-        var stdout = process.StandardOutput.ReadToEndAsync(ct);
-        var stderr = process.StandardError.ReadToEndAsync(ct);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(GitTimeoutMs);
-        try
-        {
-            await process.WaitForExitAsync(timeout.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            ShellRunner.KillTree(process);
-            ct.ThrowIfCancellationRequested();
-            throw new CheckFailed("git_error", $"git {args[0]} did not finish within {GitTimeoutMs / 1000} s");
-        }
-
-        var output = await stdout;
-        var error = (await stderr).Trim();
-        if (process.ExitCode != 0)
-        {
-            // symbolic-ref -q exits 1 with no output on a detached HEAD; callers treat empty output as the answer.
-            if (args is ["symbolic-ref", ..] && error.Length == 0) return "";
-            throw new CheckFailed("git_error", $"git {string.Join(' ', args)} failed ({process.ExitCode}): {(error.Length > 500 ? error[..500] : error)}");
-        }
-
-        return output;
     }
 
-    private static string Short(string sha) => sha.Length > 7 ? sha[..7] : sha;
+    private static string Short(string sha) => GitCli.ShortSha(sha);
 
     private static string? Str(JsonNode? node) => node is JsonValue v && v.TryGetValue(out string? s) ? s : null;
 
@@ -329,7 +289,7 @@ public sealed class PullRequestToolFactory(
     private readonly Dictionary<string, IPullRequestProviderFactory> _factories =
         factories.ToDictionary(f => f.Kind, StringComparer.OrdinalIgnoreCase);
 
-    public IAgentToolSet? Create(ServiceConfig config, string workspacePath, Issue issue)
+    public IAgentToolSet? Create(ServiceConfig config, string workspacePath, Issue issue, IReadOnlyList<string> hostSecrets)
     {
         if (config.PullRequest is not { } settings)
         {
@@ -340,6 +300,6 @@ public sealed class PullRequestToolFactory(
         var factory = _factories.TryGetValue(settings.Kind, out var f)
             ? f
             : throw new PullRequestException(PullRequestErrorCategories.InvalidConfig, $"pull_request.kind '{settings.Kind}' is not supported");
-        return new PullRequestTool(settings, factory.Create(settings, env), workspacePath, config.Hooks.Shell, loggerFactory.CreateLogger<PullRequestTool>());
+        return new PullRequestTool(settings, factory.Create(settings, env), workspacePath, config.Hooks.Shell, loggerFactory.CreateLogger<PullRequestTool>(), hostSecrets);
     }
 }

@@ -32,10 +32,12 @@ public sealed class AgentWorkerTests : IDisposable
     {
         public FakeSession? Session { get; private set; }
         public string? Cwd { get; private set; }
+        public AgentSessionRequest? Request { get; private set; }
 
         public Task<IAgentSession> StartAsync(AgentSessionRequest request, Action<AgentEvent> onEvent, CancellationToken ct)
         {
             Cwd = request.WorkspacePath;
+            Request = request;
             Session = new FakeSession(prompts, onTurn);
             return Task.FromResult<IAgentSession>(Session);
         }
@@ -77,6 +79,46 @@ public sealed class AgentWorkerTests : IDisposable
         Assert.True(factory.Session!.Disposed);
         Assert.Equal(Path.Combine(_tmp.WorkspaceRoot, "WI-1"), factory.Cwd);
         Assert.Equal(3, events.Count(e => e.Event == AgentEventNames.TurnStarted));
+    }
+
+    [Fact]
+    public async Task Sessions_get_the_gated_tracker_only_when_the_workflow_has_gates()
+    {
+        var issue = TestIssues.Make("1", state: "Done");
+        _tracker.Put(issue);
+
+        var plain = new FakeFactory([]);
+        await Worker(plain).RunAsync(issue, null, Workflow(), _ => { }, _ => { }, default);
+        Assert.Same(_tracker, plain.Request!.Tracker);
+
+        var gated = new FakeFactory([]);
+        await Worker(gated).RunAsync(issue, null, Workflow("gates:\n  Done:\n    run: dotnet test"), _ => { }, _ => { }, default);
+        var tracker = Assert.IsType<Symphony.Core.Gates.GatedTracker>(gated.Request!.Tracker);
+        Assert.Equal(_tracker.AgentToolSpecs().Select(s => s.Name), tracker.AgentToolSpecs().Select(s => s.Name));
+    }
+
+    private sealed class RecordingToolsFactory : IWorkspaceToolsFactory
+    {
+        public IReadOnlyList<string>? HostSecrets { get; private set; }
+
+        public IAgentToolSet? Create(Symphony.Core.Config.ServiceConfig config, string workspacePath, Issue issue, IReadOnlyList<string> hostSecrets)
+        {
+            HostSecrets = hostSecrets;
+            return null;
+        }
+    }
+
+    [Fact]
+    public async Task Workspace_tools_are_told_the_trackers_secrets()
+    {
+        var issue = TestIssues.Make("1", state: "Done");
+        _tracker.Put(issue);
+        var tools = new RecordingToolsFactory();
+
+        await new AgentWorker(new WorkspaceManager(NullLogger<WorkspaceManager>.Instance), new FakeFactory([]), NullLogger<AgentWorker>.Instance, tools)
+            .RunAsync(issue, null, Workflow(), _ => { }, _ => { }, default);
+
+        Assert.Equal(["FAKE_TRACKER_TOKEN"], tools.HostSecrets);
     }
 
     [Fact]
@@ -219,6 +261,25 @@ public class ExampleWorkflowTests
         Assert.Contains(handoff, prompt);
         Assert.Single(System.Text.RegularExpressions.Regex.Matches(prompt, "/bossdream-mode "));
         Assert.DoesNotContain("Stage: unknown", prompt);
+    }
+
+    [Fact]
+    public void Sdlc_example_workflow_gates_every_agent_handoff_but_never_requiere_informacion()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "WORKFLOW.sdlc.example.md");
+        var config = new Symphony.Core.Config.ConfigBuilder(
+            [new Symphony.Wrike.WrikeAdapterFactory()],
+            n => n == "WRIKE_TOKEN" ? "token" : null).Build(WorkflowLoader.Load(path), path);
+
+        foreach (var handoff in new[] { "Analizado", "Plan Propuesto", "Por Probar", "En Revision", "Con Defectos", "Documentado" })
+        {
+            Assert.True(config.GateFor(handoff) is { RequirePushed: true }, handoff);
+        }
+
+        Assert.NotEmpty(config.GateFor("Por Probar")!.Run);
+        Assert.Empty(config.GateFor("Con Defectos")!.Run);
+        Assert.Null(config.GateFor("Requiere Informacion"));
+        Assert.Empty(config.Warnings);
     }
 
     [Fact]

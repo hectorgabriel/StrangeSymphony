@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Symphony.Core.Agents;
 using Symphony.Core.Domain;
+using Symphony.Core.Gates;
 using Symphony.Core.Templating;
 using Symphony.Core.Tracker;
 using Symphony.Core.Workflow;
@@ -91,7 +92,7 @@ public sealed class AgentWorker(
         ToolAugmentedTracker? tools;
         try
         {
-            tools = workspaceTools?.Create(config, workspace.Path, issue) is { } extra
+            tools = workspaceTools?.Create(config, workspace.Path, issue, workflow.Tracker.SecretEnvironmentNames()) is { } extra
                 ? new ToolAugmentedTracker(workflow.Tracker, extra)
                 : null;
         }
@@ -101,11 +102,19 @@ public sealed class AgentWorker(
         }
 
         using var toolsScope = tools;
+        var sessionTracker = (ITrackerAdapter?)tools ?? workflow.Tracker;
+        if (config.Gates is { Count: > 0 } gates)
+        {
+            // State changes go through the host's verification gates; see docs/verification-gates.md.
+            sessionTracker = new GatedTracker(sessionTracker, gates, workspace.Path, config.Hooks.Shell, logger,
+                message => onEvent(new AgentEvent(AgentEventNames.Notification, DateTimeOffset.UtcNow) { Message = message }));
+        }
+
         async Task<IAgentSession> StartAsync(string? resumeId)
         {
             try
             {
-                return await agents.StartAsync(new AgentSessionRequest(issue, workspace.Path, config, (ITrackerAdapter?)tools ?? workflow.Tracker, resumeId), onEvent, ct);
+                return await agents.StartAsync(new AgentSessionRequest(issue, workspace.Path, config, sessionTracker, resumeId), onEvent, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
