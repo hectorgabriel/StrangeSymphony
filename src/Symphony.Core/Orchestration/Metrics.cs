@@ -8,7 +8,9 @@ namespace Symphony.Core.Orchestration;
 
 /// <summary>
 /// One line of the metrics log. <see cref="Kind"/> is <c>run</c> for a finished agent run, <c>handoff</c> when
-/// Symphony let go of an issue that is still open, and <c>closed</c> when an issue reached a terminal state.
+/// Symphony let go of an issue that is still open, <c>closed</c> when an issue reached a terminal state, and
+/// <c>gate</c> for a verification gate run: <see cref="State"/> is the gate's status, <see cref="FromState"/>
+/// the status the issue was in, and <see cref="Outcome"/> <c>passed</c> or the failed check's category.
 /// </summary>
 public sealed record MetricRecord(
     string Kind,
@@ -27,11 +29,14 @@ public sealed record MetricRecord(
     string? Outcome = null,
     string? Error = null,
     bool Resumed = false,
-    bool Rework = false)
+    bool Rework = false,
+    string? FromState = null)
 {
     public const string Run = "run";
     public const string Handoff = "handoff";
     public const string Closed = "closed";
+    public const string Gate = "gate";
+    public const string GatePassed = "passed";
 }
 
 public static class RunOutcomes
@@ -63,7 +68,9 @@ public sealed record MetricsTotals(
     int FailedRuns,
     int ReworkRuns,
     int ResumedRuns,
-    double? AvgCycleSeconds);
+    double? AvgCycleSeconds,
+    int GateChecks = 0,
+    int GateRejections = 0);
 
 public sealed record StateMetrics(
     string State,
@@ -77,6 +84,22 @@ public sealed record StateMetrics(
     int FailedRuns,
     int ReworkRuns,
     IReadOnlyDictionary<string, long> TokensByModel);
+
+/// <summary>
+/// Verification gate results for one target status. A <em>hand-off</em> is one attempt to get an issue past the
+/// gate: the checks up to and including the one that passed (or every check so far, if none has passed yet).
+/// <see cref="FirstTryHandoffs"/> are the hand-offs whose first check passed.
+/// </summary>
+public sealed record GateMetrics(
+    string State,
+    int Checks,
+    int Passed,
+    int Rejected,
+    int Issues,
+    int Handoffs,
+    int FirstTryHandoffs,
+    double AvgSeconds,
+    IReadOnlyDictionary<string, int> RejectionsByCategory);
 
 public sealed record ModelMetrics(string Model, int Runs, long InputTokens, long OutputTokens, long TotalTokens, double AgentSeconds);
 
@@ -96,7 +119,8 @@ public sealed record IssueMetrics(
     DateTimeOffset LastActivityAt,
     DateTimeOffset? ClosedAt,
     double? CycleSeconds,
-    IReadOnlyList<IssueStateMetrics> States);
+    IReadOnlyList<IssueStateMetrics> States,
+    int GateRejections = 0);
 
 public sealed record MetricsReport(
     DateTimeOffset GeneratedAt,
@@ -106,7 +130,8 @@ public sealed record MetricsReport(
     IReadOnlyList<ModelMetrics> ByModel,
     IReadOnlyList<DayMetrics> ByDay,
     IReadOnlyList<IssueMetrics> Issues,
-    BudgetStatus? Budget);
+    BudgetStatus? Budget,
+    IReadOnlyList<GateMetrics>? ByGate = null);
 
 /// <summary>
 /// The history behind <c>/api/v1/metrics</c>: an append-only JSON-lines file next to the workspaces, one line
@@ -263,6 +288,9 @@ public sealed class MetricsLog(ILogger logger)
         }
 
         var runs = records.Where(r => r.Kind == MetricRecord.Run).ToList();
+        var gateChecks = records.Where(r => r.Kind == MetricRecord.Gate).ToList();
+        var rejectionsByIssue = gateChecks.Where(r => r.Outcome != MetricRecord.GatePassed)
+            .GroupBy(r => r.IssueId).ToDictionary(g => g.Key, g => g.Count());
         var closedAt = records.Where(r => r.Kind == MetricRecord.Closed)
             .GroupBy(r => r.IssueId)
             .ToDictionary(g => g.Key, g => g.Max(r => r.At));
@@ -284,7 +312,8 @@ public sealed class MetricsLog(ILogger logger)
                 closed ?? g.Max(r => r.At),
                 closed,
                 closed is { } at ? Round((at - first).TotalSeconds) : null,
-                g.GroupBy(r => r.State ?? "").Select(s => new IssueStateMetrics(s.Key, s.Count(), Round(s.Sum(r => r.Seconds)), s.Sum(r => r.TotalTokens))).ToList());
+                g.GroupBy(r => r.State ?? "").Select(s => new IssueStateMetrics(s.Key, s.Count(), Round(s.Sum(r => r.Seconds)), s.Sum(r => r.TotalTokens))).ToList(),
+                rejectionsByIssue.GetValueOrDefault(g.Key));
         }).ToList();
 
         var cycles = issues.Where(i => i.CycleSeconds is not null).Select(i => i.CycleSeconds!.Value).ToList();
@@ -299,7 +328,9 @@ public sealed class MetricsLog(ILogger logger)
             runs.Count(r => RunOutcomes.IsFailure(r.Outcome)),
             runs.Count(r => r.Rework),
             runs.Count(r => r.Resumed),
-            cycles.Count > 0 ? Round(cycles.Average()) : null);
+            cycles.Count > 0 ? Round(cycles.Average()) : null,
+            gateChecks.Count,
+            gateChecks.Count(r => r.Outcome != MetricRecord.GatePassed));
 
         var byState = runs.GroupBy(r => r.State ?? "").Select(g =>
         {
@@ -345,8 +376,39 @@ public sealed class MetricsLog(ILogger logger)
             byModel,
             byDay,
             issues.OrderByDescending(i => i.LastActivityAt).Take(ReportIssues).ToList(),
-            budget);
+            budget,
+            ByGate(gateChecks));
     }
+
+    private static List<GateMetrics> ByGate(List<MetricRecord> checks) =>
+        checks.GroupBy(r => StateNames.Normalize(r.State)).Select(g =>
+        {
+            var rejected = g.Where(r => r.Outcome != MetricRecord.GatePassed).ToList();
+            int handoffs = 0, firstTry = 0;
+            foreach (var issue in g.GroupBy(r => r.IssueId))
+            {
+                var first = true;
+                foreach (var check in issue.OrderBy(r => r.At))
+                {
+                    if (first) handoffs++;
+                    var passed = check.Outcome == MetricRecord.GatePassed;
+                    if (first && passed) firstTry++;
+                    // A pass ends the hand-off; the issue's next check here starts a new one (it came back).
+                    first = passed;
+                }
+            }
+
+            return new GateMetrics(
+                g.Last().State ?? g.Key,
+                g.Count(),
+                g.Count() - rejected.Count,
+                rejected.Count,
+                g.Select(r => r.IssueId).Distinct().Count(),
+                handoffs,
+                firstTry,
+                Round(g.Average(r => r.Seconds)),
+                rejected.GroupBy(r => r.Outcome ?? "failed").OrderByDescending(c => c.Count()).ToDictionary(c => c.Key, c => c.Count()));
+        }).OrderByDescending(m => m.Checks).ToList();
 
     public static DateOnly Day(DateTimeOffset at, TimeZoneInfo zone) => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(at, zone).DateTime);
 

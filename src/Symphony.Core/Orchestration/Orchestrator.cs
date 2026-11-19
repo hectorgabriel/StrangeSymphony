@@ -646,6 +646,14 @@ public sealed class Orchestrator
         if (ev.Event == AgentEventNames.TurnStarted) entry.TurnCount++;
         if (ev.Event == AgentEventNames.TurnCompleted) entry.TurnsCompleted++;
         if (ev.RateLimits is not null) _rateLimits = ev.RateLimits.DeepClone();
+        if (ev.Gate is { } gate)
+        {
+            _metrics.Add(MetricsPath, new MetricRecord(
+                MetricRecord.Gate, m.IssueId, entry.Issue.Identifier, ev.Timestamp, gate.State,
+                Seconds: gate.Seconds,
+                Outcome: gate.Passed ? MetricRecord.GatePassed : gate.Category ?? "failed",
+                FromState: gate.FromState));
+        }
         if (ev.ThreadId is not null && _tracks.TryGetValue(m.IssueId, out var resumable))
         {
             resumable.ResumeSessionId = ev.ThreadId;

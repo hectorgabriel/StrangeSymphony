@@ -17,7 +17,15 @@ public sealed record AgentEvent(string Event, DateTimeOffset Timestamp)
     public string? Message { get; init; }
     public TokenTotals? AbsoluteTotals { get; init; }
     public JsonNode? RateLimits { get; init; }
+    /// <summary>Set on <see cref="AgentEventNames.GateChecked"/>: what a verification gate decided.</summary>
+    public GateCheck? Gate { get; init; }
 }
+
+/// <summary>
+/// One verification gate run (docs/verification-gates.md): the agent asked to move the issue from
+/// <see cref="FromState"/> to <see cref="State"/>. <see cref="Category"/> says why it failed.
+/// </summary>
+public sealed record GateCheck(string State, string? FromState, bool Passed, string? Category, int Seconds);
 
 public static class AgentEventNames
 {
@@ -32,6 +40,7 @@ public static class AgentEventNames
     public const string ToolCall = "tool_call";
     public const string UnsupportedToolCall = "unsupported_tool_call";
     public const string Notification = "notification";
+    public const string GateChecked = "gate_checked";
     public const string RateLimit = "rate_limit";
     public const string OtherMessage = "other_message";
     public const string Malformed = "malformed";

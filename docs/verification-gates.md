@@ -35,6 +35,19 @@ The section is validated when the workflow loads. An unknown key, an empty comma
 
 The `update_state` tool description lists the gated statuses, so the agent knows in advance that the move is checked. Each run, failure and pass also appears as a notification on the dashboard and in the log (`action=gate outcome=running|passed|failed`).
 
+## Metrics
+
+Every gate run is also a `gate` line in the metrics log (`<workspace.root>/.symphony-metrics.jsonl`). The **Verification gates** table on `/line`, and `by_gate` in `GET /api/v1/metrics`, show for each gated status:
+
+| Column | Meaning |
+|---|---|
+| Checks, Rejected | How often the gate ran, and how often it refused the move (with the rejection rate) |
+| Hand-offs | Attempts to get a task past the gate: the checks up to and including the one that passed. A task that comes back to the same status later starts a new hand-off |
+| First try | Share of hand-offs whose first check passed: how often the agent's work was ready when it said so |
+| Rejected for | Rejections by category: `verification_failed` (build or tests), `not_pushed`, `uncommitted_changes` and so on |
+
+The totals show the overall rejection rate, and each task in the task table shows its rejections. A high `not_pushed` or `uncommitted_changes` count usually means the prompt needs a clearer "commit and push" step. A high `verification_failed` count means the agent hands off work that doesn't build or pass its tests.
+
 ## What gates guarantee and what they don't
 
 - **The host runs the checks.** The agent can't skip a gate, run it against another commit, or report a test run that never happened. `update_state` is the only tool either tracker adapter offers for changing a status, so every agent move goes through the gate.

@@ -384,3 +384,85 @@ public class MetricsTests
         Assert.Equal(12, reloaded.IssueTokens("1"));
     }
 }
+
+public class GateMetricsTests
+{
+    private static AgentEvent Gate(string state, bool passed, string? category = null, int seconds = 10) =>
+        new(AgentEventNames.GateChecked, DateTimeOffset.UtcNow) { Message = "gate", Gate = new GateCheck(state, "Todo", passed, category, seconds) };
+
+    [Fact]
+    public async Task Gate_results_are_logged_per_status_and_survive_a_restart()
+    {
+        await using var h = new OrchestratorHarness();
+        h.Tracker.Put(TestIssues.Make("1"));
+        h.Start();
+        await Wait.Until(() => h.Workers.Length == 1, "dispatch");
+        h.Workers[0].Emit(Gate("Review", false, "verification_failed", 30));
+        h.Workers[0].Emit(Gate("Review", false, "not_pushed", 1));
+        h.Workers[0].Emit(Gate("Review", true, seconds: 50));
+        await Wait.Until(() => h.Orchestrator.GetMetrics().Totals.GateChecks == 3, "gate records");
+        h.Workers[0].Succeed();
+        await Wait.Until(() => h.Orchestrator.GetMetrics().Totals.Runs == 1, "run record");
+
+        await h.RestartAsync();
+        var m = h.Orchestrator.GetMetrics();
+        Assert.Equal((3, 2), (m.Totals.GateChecks, m.Totals.GateRejections));
+        var gate = Assert.Single(m.ByGate!);
+        Assert.Equal(("Review", 3, 1, 2, 1), (gate.State, gate.Checks, gate.Passed, gate.Rejected, gate.Issues));
+        Assert.Equal((1, 0), (gate.Handoffs, gate.FirstTryHandoffs));
+        Assert.Equal(27, gate.AvgSeconds);
+        Assert.Equal(new Dictionary<string, int> { ["verification_failed"] = 1, ["not_pushed"] = 1 }, gate.RejectionsByCategory);
+        var lines = File.ReadAllLines(MetricsLog.PathFor(h.Tmp.WorkspaceRoot)).Where(l => l.Contains("\"kind\":\"gate\"")).ToList();
+        Assert.Equal(3, lines.Count);
+        Assert.Contains("\"from_state\":\"Todo\"", lines[0]);
+        Assert.Contains("\"outcome\":\"passed\"", lines[2]);
+        Assert.Equal(2, Assert.Single(m.Issues).GateRejections);
+    }
+
+    [Fact]
+    public void A_hand_off_ends_at_a_pass_so_a_task_that_comes_back_starts_a_new_one()
+    {
+        var log = new MetricsLog(NullLogger.Instance);
+        var path = Path.Combine(Path.GetTempPath(), $"symphony-gate-metrics-{Guid.NewGuid():N}.jsonl");
+        var t = DateTimeOffset.UtcNow;
+        void Check(string issue, string state, string outcome, int minute) =>
+            log.Add(path, new MetricRecord(MetricRecord.Gate, issue, $"WI-{issue}", t.AddMinutes(minute), state, Seconds: 10, Outcome: outcome));
+        try
+        {
+            // WI-1: passes first time, comes back from review, fails once, then passes.
+            Check("1", "Por Probar", "passed", 1);
+            Check("1", "Por Probar", "verification_failed", 2);
+            Check("1", "Por Probar", "passed", 3);
+            // WI-2: passes first time. WI-3: still failing.
+            Check("2", "por probar", "passed", 4);
+            Check("3", "Por Probar", "not_pushed", 5);
+            Check("3", "Por Probar", "not_pushed", 6);
+            Check("1", "En Revision", "passed", 7);
+
+            var report = log.Report(t, TimeZoneInfo.Utc, null);
+
+            var probar = report.ByGate![0];
+            Assert.Equal((6, 3, 3, 3), (probar.Checks, probar.Passed, probar.Rejected, probar.Issues));
+            Assert.Equal((4, 2), (probar.Handoffs, probar.FirstTryHandoffs));
+            Assert.Equal(2, probar.RejectionsByCategory["not_pushed"]);
+            // Spellings of one status are one gate, shown with the latest spelling, busiest gate first.
+            Assert.Equal(["Por Probar", "En Revision"], report.ByGate!.Select(g => g.State));
+            var revision = report.ByGate![1];
+            Assert.Equal((1, 1, 1), (revision.Checks, revision.Handoffs, revision.FirstTryHandoffs));
+            // Gate records are not runs.
+            Assert.Equal(0, report.Totals.Runs);
+
+            // The names the /line page reads.
+            var json = StatusServer.MetricsJson(report);
+            Assert.Equal(7, json["totals"]!["gate_checks"]!.GetValue<int>());
+            Assert.Equal(3, json["totals"]!["gate_rejections"]!.GetValue<int>());
+            var gate = json["by_gate"]![0]!;
+            Assert.Equal(2, gate["first_try_handoffs"]!.GetValue<int>());
+            Assert.Equal(2, gate["rejections_by_category"]!["not_pushed"]!.GetValue<int>());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+}
