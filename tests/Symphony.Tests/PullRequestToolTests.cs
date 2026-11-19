@@ -94,10 +94,10 @@ public sealed class PullRequestToolTests : IDisposable
     private readonly GitSandbox _git = new();
     private readonly FakePullRequestProvider _provider = new();
 
-    private PullRequestTool Tool(string verify = "exit 0", int maxFiles = 200, IReadOnlyList<string>? forbidden = null) =>
+    private PullRequestTool Tool(string verify = "exit 0", int maxFiles = 200, IReadOnlyList<string>? forbidden = null, IReadOnlyList<string>? hostSecrets = null) =>
         new(new PullRequestSettings("fake", new Dictionary<string, object?>(), "origin", "main", Draft: true, verify, VerifyTimeoutMs: 60000, maxFiles,
                 forbidden ?? ConfigBuilder.DefaultForbiddenPaths),
-            _provider, _git.Work, ShellRunner.Auto, NullLogger<PullRequestTool>.Instance);
+            _provider, _git.Work, ShellRunner.Auto, NullLogger<PullRequestTool>.Instance, hostSecrets);
 
     private static Task<AgentToolResult> Call(PullRequestTool tool, string title = "T02: motivos", string description = "Cambia el catálogo.") =>
         tool.ExecuteAsync(PullRequestTool.Name, new JsonObject { ["title"] = title, ["description"] = description }, TestIssues.Make("1"), default);
@@ -122,6 +122,26 @@ public sealed class PullRequestToolTests : IDisposable
         Assert.StartsWith("Cambia el catálogo.", draft.Description, StringComparison.Ordinal);
         Assert.Contains($"Commit: `{_git.Head()[..7]}` on `feature`", draft.Description, StringComparison.Ordinal);
         Assert.Contains("`exit 0` exited 0", draft.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_verify_command_sees_neither_the_tracker_nor_the_provider_credentials()
+    {
+        _git.Commit("src/a.cs", "class A {}\n");
+        _git.Push();
+        // FAKE_PR_TOKEN is the fake provider's secret; the other stands in for the tracker's.
+        string[] names = ["SYMPHONY_PR_TEST_TRACKER_SECRET", "FAKE_PR_TOKEN"];
+        foreach (var n in names) Environment.SetEnvironmentVariable(n, "secret");
+        try
+        {
+            var result = await Call(Tool("test -z \"$SYMPHONY_PR_TEST_TRACKER_SECRET$FAKE_PR_TOKEN\"", hostSecrets: [names[0]]));
+
+            Assert.True(result.Success, result.Output?.ToJsonString());
+        }
+        finally
+        {
+            foreach (var n in names) Environment.SetEnvironmentVariable(n, null);
+        }
     }
 
     [Fact]

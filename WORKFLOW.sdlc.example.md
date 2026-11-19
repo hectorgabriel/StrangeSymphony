@@ -54,7 +54,27 @@ claude:
     - "Bash(dotnet format)"
     - "Bash(dotnet format *)"
   disallowed_tools: [AskUserQuestion, WebFetch]
-  stall_timeout_ms: 900000
+  # Above the longest gate's timeout_ms plus 2 minutes, or a long gate looks like a stalled session.
+  stall_timeout_ms: 1200000
+
+# Host-side checks before an agent may move a task to these statuses (docs/verification-gates.md).
+# On failure the status doesn't change and the agent gets the reason and the output.
+# Requiere Informacion has no gate on purpose: a blocked agent must always be able to stop.
+gates:
+  Analizado: {}                       # documents committed and pushed
+  Plan Propuesto: {}                  # plans/<id>/tasks.md committed and pushed
+  Por Probar:
+    run:
+      - dotnet build --nologo
+      - dotnet test --nologo --no-build
+    timeout_ms: 900000
+  En Revision:
+    run:
+      - dotnet build --nologo
+      - dotnet test --nologo --no-build
+    timeout_ms: 900000
+  Con Defectos: {}                    # test cases pushed; failing tests are why the task is here
+  Documentado: {}                     # manual committed and pushed
 
 # Token caps (0 or absent = no limit). Counted as the Metrics page shows them, cache reads included.
 # budget:
@@ -87,6 +107,8 @@ comments for progress from earlier attempts before starting over.
 - Run each command on its own (`git`, `dotnet build`, `dotnet test`, `dotnet format`); do not chain
   them with `;` or `&&`. A denied command cannot be retried in the same session.
 - Start by reading the task and its latest comments with `get_task`.
+- Commit and push before every status change. Symphony checks the pushed branch (and for some
+  statuses builds and tests it) before it changes the status, and refuses the change otherwise.
 - The line starting with `/bossdream-mode` below sets the BossDream mode for this stage. Do not
   change the mode yourself; the hooks block edits the mode doesn't allow.
 
@@ -131,7 +153,8 @@ Your role is defined in `.claude/agents/developer.md`, and the approved task lis
 4. The BossDream Stop hook runs the quality pipeline and blocks completion while a gate fails or a
    task is unchecked. Fix failures; do not skip or ignore tests.
 5. Commit and push, then post a comment: what changed, how it was verified, what to review.
-6. Move the task to "Por Probar".
+6. Move the task to "Por Probar". Symphony builds and tests the pushed commit first; if that fails,
+   the status doesn't change and the result shows the output. Fix it, push and try again.
 {% elsif stage == "por probar" %}
 ## Stage: verification
 BossDream mode: /bossdream-mode implement

@@ -21,7 +21,11 @@ public interface IAgentToolSet : IDisposable
 /// <summary>Builds the workspace tools for one session, or none when the workflow doesn't configure any.</summary>
 public interface IWorkspaceToolsFactory
 {
-    IAgentToolSet? Create(ServiceConfig config, string workspacePath, Issue issue);
+    /// <param name="hostSecrets">
+    /// Environment names that hold the tracker's credentials. A tool that runs project code (a build, tests)
+    /// must remove them, and its own, from that process's environment, as the agent's process does.
+    /// </param>
+    IAgentToolSet? Create(ServiceConfig config, string workspacePath, Issue issue, IReadOnlyList<string> hostSecrets);
 }
 
 /// <summary>

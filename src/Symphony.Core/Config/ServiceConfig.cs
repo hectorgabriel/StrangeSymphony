@@ -74,6 +74,17 @@ public sealed record BudgetSettings(long MaxTokensPerIssue, long MaxTokensPerDay
     public static readonly BudgetSettings None = new(0, 0);
 }
 
+/// <summary>
+/// One entry of the front matter key <c>gates</c> (extension; docs/verification-gates.md): checks the host
+/// runs in the workspace before the agent may move an issue to <see cref="State"/>.
+/// </summary>
+public sealed record GateSettings(
+    string State,
+    IReadOnlyList<string> Run,
+    bool RequirePushed,
+    string Remote,
+    int TimeoutMs);
+
 public sealed record ServiceConfig(
     string WorkflowPath,
     TrackerSettings Tracker,
@@ -85,9 +96,15 @@ public sealed record ServiceConfig(
     int? ServerPort,
     IReadOnlyList<string> Warnings,
     PullRequestSettings? PullRequest = null,
-    BudgetSettings? Budget = null)
+    BudgetSettings? Budget = null,
+    // Normalized target state name -> gate.
+    IReadOnlyDictionary<string, GateSettings>? Gates = null)
 {
     public BudgetSettings Budgets => Budget ?? BudgetSettings.None;
+
+    /// <summary>The gate for moving an issue to <paramref name="state"/>, if the workflow sets one.</summary>
+    public GateSettings? GateFor(string? state) =>
+        Gates is not null && Gates.TryGetValue(Domain.StateNames.Normalize(state), out var gate) ? gate : null;
 
     public bool IsActiveState(string state)
     {
