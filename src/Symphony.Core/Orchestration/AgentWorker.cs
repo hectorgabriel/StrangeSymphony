@@ -106,8 +106,7 @@ public sealed class AgentWorker(
         if (config.Gates is { Count: > 0 } gates)
         {
             // State changes go through the host's verification gates; see docs/verification-gates.md.
-            sessionTracker = new GatedTracker(sessionTracker, gates, workspace.Path, config.Hooks.Shell, logger,
-                message => onEvent(new AgentEvent(AgentEventNames.Notification, DateTimeOffset.UtcNow) { Message = message }));
+            sessionTracker = new GatedTracker(sessionTracker, gates, workspace.Path, config.Hooks.Shell, logger, onEvent);
         }
 
         async Task<IAgentSession> StartAsync(string? resumeId)

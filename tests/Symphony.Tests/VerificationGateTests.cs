@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
+using Symphony.Core.Agents;
 using Symphony.Core.Config;
 using Symphony.Core.Domain;
 using Symphony.Core.Gates;
@@ -183,8 +184,8 @@ public sealed class VerificationGateTests : IDisposable
         }
     }
 
-    private GatedTracker Gated(StateTracker inner, List<string>? notes = null, params GateSettings[] gates) =>
-        new(inner, gates.ToDictionary(g => StateNames.Normalize(g.State)), _git.Work, ShellRunner.Auto, NullLogger.Instance, notes is null ? null : notes.Add);
+    private GatedTracker Gated(StateTracker inner, List<AgentEvent>? events = null, params GateSettings[] gates) =>
+        new(inner, gates.ToDictionary(g => StateNames.Normalize(g.State)), _git.Work, ShellRunner.Auto, NullLogger.Instance, events is null ? null : events.Add);
 
     private static Task<AgentToolResult> Move(GatedTracker tracker, string state) =>
         tracker.ExecuteAgentToolAsync("update_state", new JsonObject { ["state"] = state }, TestIssues.Make("1", state: "Plan Aprobado"), default);
@@ -194,15 +195,19 @@ public sealed class VerificationGateTests : IDisposable
     {
         _git.Commit("src/a.cs", "class A {}\n");
         var inner = new StateTracker();
-        var notes = new List<string>();
+        var events = new List<AgentEvent>();
 
-        var result = await Move(Gated(inner, notes, Gate(run: ["exit 0"])), "por probar");
+        var result = await Move(Gated(inner, events, Gate(run: ["exit 0"])), "por probar");
 
         Assert.False(result.Success);
         Assert.Equal(GateOutcome.NotPushed, result.Output!["error"]!["category"]!.GetValue<string>());
         Assert.Contains("status was not changed", result.Output["error"]!["message"]!.GetValue<string>(), StringComparison.Ordinal);
         Assert.Empty(inner.Moves);
-        Assert.Contains(notes, n => n.StartsWith("gate \"Por Probar\" failed: not_pushed", StringComparison.Ordinal));
+        var check = Assert.Single(events, e => e.Event == AgentEventNames.GateChecked);
+        Assert.StartsWith("gate \"Por Probar\" failed: not_pushed", check.Message, StringComparison.Ordinal);
+        Assert.Equal(new GateCheck("Por Probar", "Plan Aprobado", false, GateOutcome.NotPushed, check.Gate!.Seconds), check.Gate);
+        // The "running" notification comes first, so the stall timer restarts when the gate does.
+        Assert.Equal(AgentEventNames.Notification, events[0].Event);
     }
 
     [Fact]
@@ -210,12 +215,16 @@ public sealed class VerificationGateTests : IDisposable
     {
         CommitAndPush();
         var inner = new StateTracker();
+        var events = new List<AgentEvent>();
 
-        var result = await Move(Gated(inner, null, Gate(run: ["exit 0"])), "Por Probar");
+        var result = await Move(Gated(inner, events, Gate(run: ["exit 0"])), "Por Probar");
 
         Assert.True(result.Success, result.Output?.ToJsonString());
         Assert.Equal(["Por Probar"], inner.Moves);
         Assert.Equal(_git.Head(), result.Output!["gate"]!["commit"]!.GetValue<string>());
+        var gate = Assert.Single(events, e => e.Event == AgentEventNames.GateChecked).Gate!;
+        Assert.True(gate.Passed);
+        Assert.Null(gate.Category);
     }
 
     [Fact]

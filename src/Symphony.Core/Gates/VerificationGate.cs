@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
+using Symphony.Core.Agents;
 using Symphony.Core.Config;
 using Symphony.Core.Domain;
 using Symphony.Core.Tracker;
@@ -130,7 +131,7 @@ public sealed class GatedTracker(
     string workspacePath,
     string shell,
     ILogger logger,
-    Action<string>? notify = null) : ITrackerAdapter
+    Action<AgentEvent>? onEvent = null) : ITrackerAdapter
 {
     /// <summary>The tool every tracker adapter uses to change an issue's state, with its <c>state</c> argument.</summary>
     public const string UpdateStateTool = "update_state";
@@ -170,20 +171,25 @@ public sealed class GatedTracker(
 
         logger.LogInformation("action=gate outcome=running issue_id={IssueId} issue_identifier={IssueIdentifier} state={State} commands={Commands}",
             issue.Id, issue.Identifier, gate.State, gate.Run.Count);
-        notify?.Invoke($"gate \"{gate.State}\": running");
+        onEvent?.Invoke(new AgentEvent(AgentEventNames.Notification, DateTimeOffset.UtcNow) { Message = $"gate \"{gate.State}\": running" });
         var outcome = await VerificationGate.CheckAsync(gate, workspacePath, shell, inner.SecretEnvironmentNames(), ct);
+        void Report(string message) => onEvent?.Invoke(new AgentEvent(AgentEventNames.GateChecked, DateTimeOffset.UtcNow)
+        {
+            Message = message,
+            Gate = new GateCheck(gate.State, issue.State, outcome.Passed, outcome.Category, outcome.Seconds),
+        });
         if (!outcome.Passed)
         {
             logger.LogWarning("action=gate outcome=failed issue_id={IssueId} issue_identifier={IssueIdentifier} state={State} category={Category} seconds={Seconds} reason={Reason}",
                 issue.Id, issue.Identifier, gate.State, outcome.Category, outcome.Seconds, outcome.Message!.Split('\n')[0]);
-            notify?.Invoke($"gate \"{gate.State}\" failed: {outcome.Category}: {outcome.Message!.Split('\n')[0]}");
+            Report($"gate \"{gate.State}\" failed: {outcome.Category}: {outcome.Message!.Split('\n')[0]}");
             return AgentToolResult.Fail(outcome.Category!,
                 $"Symphony's verification gate for \"{gate.State}\" did not pass, so the status was not changed: {outcome.Message}");
         }
 
         logger.LogInformation("action=gate outcome=passed issue_id={IssueId} issue_identifier={IssueIdentifier} state={State} commit={Commit} seconds={Seconds}",
             issue.Id, issue.Identifier, gate.State, outcome.Commit is null ? "-" : GitCli.ShortSha(outcome.Commit), outcome.Seconds);
-        notify?.Invoke($"gate \"{gate.State}\" passed in {outcome.Seconds} s");
+        Report($"gate \"{gate.State}\" passed in {outcome.Seconds} s");
 
         var result = await inner.ExecuteAgentToolAsync(name, arguments, issue, ct);
         if (result.Success && result.Output is JsonObject output)

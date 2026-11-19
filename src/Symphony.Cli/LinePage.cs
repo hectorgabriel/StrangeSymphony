@@ -33,6 +33,7 @@ internal static class LinePage
   th, td { text-align: right; padding: 6px 8px; border-top: 1px solid var(--line); white-space: nowrap }
   th { font-size: 12px; font-weight: 600; color: var(--muted); border-top: 0 }
   th:first-child, td:first-child { text-align: left; white-space: normal }
+  th.wrap, td.wrap { text-align: left; white-space: normal; min-width: 160px }
   td.bar { position: relative; min-width: 120px }
   td.bar i { position: absolute; left: 8px; top: 7px; bottom: 7px; background: var(--bar); border-radius: 3px }
   td.bar span { position: relative }
@@ -53,6 +54,7 @@ internal static class LinePage
   <div class="banner" id="error"></div>
   <dl class="tiles" id="tiles"></dl>
   <section><h2>By status</h2><p>Agent time and tokens for each status an agent worked in. Rework is a stage that ran again after it had been handed off.</p><div id="states"></div></section>
+  <section><h2>Verification gates</h2><p>Symphony's checks before an agent may move a task to each status. A hand-off is one attempt to get a task past the gate; first try means its first check passed.</p><div id="gates"></div></section>
   <section><h2>By model</h2><p>Where the tokens went.</p><div id="models"></div></section>
   <section><h2>Last 14 days</h2><p>Runs finished, tasks closed and tokens used per day.</p><div id="days"></div></section>
   <section><h2>Tasks</h2><p>The 50 most recently active tasks. Cycle time runs from the first agent run to the terminal status.</p><div id="issues"></div></section>
@@ -65,17 +67,17 @@ const dur = s => { if (s == null) return '–'; s = Math.round(s); const d = Mat
 const pct = (a, b) => b ? Math.round(100 * a / b) + '%' : '–';
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 function tile(name, value, note) { const d = el('div', 'tile'); d.append(el('dt', '', name), el('dd', '', value)); if (note) d.append(el('small', '', note)); return d; }
-// cols: [header, row => text, row => number for a bar (optional)]
+// cols: [header, row => text, row => number for a bar (optional), 'wrap' for long text (optional)]
 function table(cols, rows, empty) {
   if (!rows.length) return el('div', 'empty', empty);
   const t = el('table'), head = el('tr');
-  for (const [h] of cols) head.append(el('th', '', h));
+  for (const [h, , , wrap] of cols) head.append(el('th', wrap ? 'wrap' : '', h));
   t.append(head);
   for (const [, , bar] of cols) if (bar) bar.max = Math.max(1, ...rows.map(bar));
   for (const r of rows) {
     const tr = el('tr');
-    for (const [, text, bar] of cols) {
-      const td = el('td', bar ? 'bar' : '');
+    for (const [, text, bar, wrap] of cols) {
+      const td = el('td', bar ? 'bar' : wrap ? 'wrap' : '');
       if (bar) { const i = el('i'); i.style.width = `calc(${100 * bar(r) / bar.max}% - 16px)`; td.append(i, el('span', '', text(r))); } else td.textContent = text(r);
       tr.append(td);
     }
@@ -99,19 +101,24 @@ async function load() {
       tile('Failed runs', pct(t.failed_runs, t.runs), `${fmt(t.failed_runs)} of ${fmt(t.runs)}`),
       tile('Rework', pct(t.rework_runs, t.runs), `${fmt(t.rework_runs)} runs`),
       tile('Avg cycle time', dur(t.avg_cycle_seconds), 'first run to closed'),
+      tile('Gate rejections', pct(t.gate_rejections, t.gate_checks), `${fmt(t.gate_rejections)} of ${fmt(t.gate_checks)} checks`),
       tile('Today', short(b?.day_tokens ?? 0), b?.max_tokens_per_day ? `of ${short(b.max_tokens_per_day)} daily budget` : 'no daily budget'));
     $('states').replaceChildren(table([
       ['Status', r => r.state], ['Tasks', r => fmt(r.issues)], ['Runs', r => fmt(r.runs)], ['Agent time', r => dur(r.agent_seconds)],
       ['Per task', r => dur(r.avg_seconds_per_issue)], ['Tokens', r => short(r.total_tokens), r => r.total_tokens], ['Failed', r => fmt(r.failed_runs)], ['Rework', r => fmt(r.rework_runs)],
       ['Models', r => Object.keys(r.tokens_by_model).join(', ')]], m.by_state, 'No finished runs yet.'));
+    $('gates').replaceChildren(table([
+      ['Status', r => r.state], ['Tasks', r => fmt(r.issues)], ['Checks', r => fmt(r.checks), r => r.checks], ['Rejected', r => `${fmt(r.rejected)} (${pct(r.rejected, r.checks)})`],
+      ['Hand-offs', r => fmt(r.handoffs)], ['First try', r => pct(r.first_try_handoffs, r.handoffs)], ['Avg check', r => dur(r.avg_seconds)],
+      ['Rejected for', r => Object.entries(r.rejections_by_category).map(([k, v]) => `${k} ×${v}`).join(', ') || '–', null, 'wrap']], m.by_gate ?? [], 'No gate has run yet. Gates are set in the workflow\'s gates section.'));
     $('models').replaceChildren(table([
       ['Model', r => r.model], ['Runs', r => fmt(r.runs)], ['Agent time', r => dur(r.agent_seconds)], ['Input', r => short(r.input_tokens)], ['Output', r => short(r.output_tokens)],
       ['Tokens', r => short(r.total_tokens), r => r.total_tokens]], m.by_model, 'No finished runs yet.'));
     $('days').replaceChildren(table([
       ['Day', r => r.day], ['Runs', r => fmt(r.runs)], ['Closed', r => fmt(r.closed_issues)], ['Agent time', r => dur(r.agent_seconds)], ['Tokens', r => short(r.total_tokens), r => r.total_tokens]], m.by_day, ''));
     $('issues').replaceChildren(table([
-      ['Task', r => r.identifier], ['Statuses', r => r.states.map(s => `${s.state} ×${s.runs}`).join(', ')], ['Runs', r => fmt(r.runs)], ['Failed', r => fmt(r.failed_runs)], ['Rework', r => fmt(r.rework_runs)],
-      ['Agent time', r => dur(r.agent_seconds)], ['Tokens', r => short(r.total_tokens), r => r.total_tokens], ['Cycle time', r => r.closed_at ? dur(r.cycle_seconds) : 'open']], m.issues, 'No finished runs yet.'));
+      ['Task', r => r.identifier], ['Statuses', r => r.states.map(s => `${s.state} ×${s.runs}`).join(', '), null, 'wrap'], ['Runs', r => fmt(r.runs)], ['Failed', r => fmt(r.failed_runs)], ['Rework', r => fmt(r.rework_runs)],
+      ['Gate rejections', r => fmt(r.gate_rejections)], ['Agent time', r => dur(r.agent_seconds)], ['Tokens', r => short(r.total_tokens), r => r.total_tokens], ['Cycle time', r => r.closed_at ? dur(r.cycle_seconds) : 'open']], m.issues, 'No finished runs yet.'));
   } catch (e) { $('error').className = 'banner show'; $('error').textContent = `Can't load the metrics: ${e.message}`; }
 }
 load(); setInterval(load, 10000);
