@@ -85,6 +85,18 @@ public sealed record GateSettings(
     string Remote,
     int TimeoutMs);
 
+/// <summary>
+/// The front matter key <c>defects</c> (extension; docs/rework-loops.md): the statuses that send work back
+/// (<see cref="States"/>, normalized) and the categories an agent reports defects in before it moves an issue there.
+/// <see cref="Categories"/> maps each category name to its description, in workflow order.
+/// </summary>
+public sealed record DefectSettings(IReadOnlyList<string> States, IReadOnlyList<KeyValuePair<string, string>> Categories)
+{
+    public static readonly IReadOnlyList<string> Severities = ["critical", "major", "minor"];
+
+    public bool IsDefectState(string? state) => States.Contains(Domain.StateNames.Normalize(state));
+}
+
 public sealed record ServiceConfig(
     string WorkflowPath,
     TrackerSettings Tracker,
@@ -103,7 +115,9 @@ public sealed record ServiceConfig(
     // workspace (agent, hooks, gate commands, verify_command). See docs/data-isolation.md.
     IReadOnlyList<string>? StripEnv = null,
     // Extension, audit.path: where the audit trail goes; null means <workspace.root>/.symphony-audit.jsonl.
-    string? AuditPath = null)
+    string? AuditPath = null,
+    // Extension, defects: send-back statuses and defect categories; null means no report_defects tool.
+    DefectSettings? Defects = null)
 {
     public BudgetSettings Budgets => Budget ?? BudgetSettings.None;
 

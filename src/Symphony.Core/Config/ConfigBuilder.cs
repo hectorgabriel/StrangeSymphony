@@ -156,6 +156,7 @@ public sealed partial class ConfigBuilder(
 
         var pullRequest = PullRequest(root, claudeSettings, warnings);
         var gates = Gates(root, claudeSettings, warnings);
+        var defects = Defects(root);
 
         return new ServiceConfig(
             Path.GetFullPath(workflowPath),
@@ -171,7 +172,79 @@ public sealed partial class ConfigBuilder(
             budgetSettings,
             gates,
             stripEnv,
-            auditPath);
+            auditPath,
+            defects);
+    }
+
+    /// <summary><c>defects</c> (extension; docs/rework-loops.md). Absent means no <c>report_defects</c> tool.</summary>
+    private static DefectSettings? Defects(IReadOnlyDictionary<string, object?> root)
+    {
+        if (!root.TryGetValue("defects", out var raw) || raw is null)
+        {
+            return null;
+        }
+
+        if (raw is not Dictionary<string, object?> map)
+        {
+            throw Invalid("defects", "must be a map with 'states' and 'categories'");
+        }
+
+        var unknown = map.Keys.Except(["states", "categories"], StringComparer.Ordinal).ToList();
+        if (unknown.Count > 0)
+        {
+            throw Invalid("defects", $"has unknown key(s) {string.Join(", ", unknown)} (allowed: states, categories)");
+        }
+
+        var states = (map.TryGetValue("states", out var s) && s is string one ? [one] : StringList(map, "defects.states", "states") ?? [])
+            .Select(x => x.Trim()).ToList();
+        if (states.Count == 0 || states.Any(x => x.Length == 0))
+        {
+            throw Invalid("defects.states", "must name the status (or statuses) that send work back, such as \"Con Defectos\"");
+        }
+
+        // A list of names, or a map of name to description.
+        var categories = new List<KeyValuePair<string, string>>();
+        switch (map.GetValueOrDefault("categories"))
+        {
+            case List<object?>:
+                categories.AddRange(StringList(map, "defects.categories", "categories")!.Select(c => KeyValuePair.Create(c.Trim(), "")));
+                break;
+            case Dictionary<string, object?> named:
+                foreach (var (name, description) in named)
+                {
+                    categories.Add(KeyValuePair.Create(name.Trim(), description switch
+                    {
+                        null => "",
+                        string d => d.Trim(),
+                        _ => throw Invalid($"defects.categories.{name}", "must be a description"),
+                    }));
+                }
+
+                break;
+            default:
+                throw Invalid("defects.categories", "must be a list of category names, or a map of name to description");
+        }
+
+        if (categories.Count == 0)
+        {
+            throw Invalid("defects.categories", "must have at least one category");
+        }
+
+        foreach (var (name, _) in categories)
+        {
+            // Names end up as metric keys and enum values in the tool's schema: keep them plain.
+            if (!System.Text.RegularExpressions.Regex.IsMatch(name, "^[a-z][a-z0-9_]{0,39}$"))
+            {
+                throw Invalid("defects.categories", $"'{name}' must be lowercase letters, digits and '_', starting with a letter, at most 40 characters");
+            }
+        }
+
+        if (categories.Select(c => c.Key).Distinct().Count() != categories.Count)
+        {
+            throw Invalid("defects.categories", "has a category more than once");
+        }
+
+        return new DefectSettings(states.Select(StateNames.Normalize).Distinct().ToList(), categories);
     }
 
     /// <summary><c>workspace.strip_env</c> (extension; docs/data-isolation.md): names or <c>*</c> patterns.</summary>

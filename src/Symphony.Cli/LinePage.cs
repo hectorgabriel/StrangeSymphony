@@ -23,6 +23,8 @@ internal static class LinePage
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto }
   section h2 { font-size: 15px; margin: 0 0 2px }
   section p { margin: 0 0 10px; color: var(--muted) }
+  section h3 { font-size: 13px; margin: 18px 0 6px }
+  section .tiles { margin-bottom: 14px }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums }
   th, td { text-align: right; padding: 6px 8px; border-top: 1px solid var(--line); white-space: nowrap }
   th { font-size: 12px; font-weight: 600; color: var(--muted); border-top: 0 }
@@ -61,6 +63,7 @@ internal static class LinePage
   <dl class="tiles" id="tiles"></dl>
   <section><h2>By status</h2><p>Agent time and tokens for each status an agent worked in. Rework is a stage that ran again after it had been handed off.</p><div id="states"></div></section>
   <section><h2>Verification gates</h2><p>Symphony's checks before an agent may move a task to each status. A hand-off is one attempt to get a task past the gate; first try means its first check passed.</p><div id="gates"></div></section>
+  <section><h2>Why work goes back</h2><p>A loop is an agent sending a task back, such as the tester moving it to Con Defectos, with the defects it found by category and severity. Triage is the wait until the next agent run. Rework is what the loop cost: the runs that repeated a stage until the task got past the tester again. Rework no report explains was a person sending the task back, for example from review.</p><dl class="tiles" id="rework-tiles"></dl><div id="categories"></div><h3>Whose work went back</h3><div id="sources"></div><h3>Recent loops</h3><div id="loops"></div></section>
   <section><h2>By model</h2><p>Where the tokens went.</p><div id="models"></div></section>
   <section><h2>Last 14 days</h2><p>Runs finished, tasks closed and tokens used per day.</p><div id="days"></div></section>
   <section><h2>Tasks</h2><p>The 50 most recently active tasks. Cycle time runs from the first agent run to the terminal status.</p><div id="issues"></div></section>
@@ -117,13 +120,37 @@ async function load() {
       ['Status', r => r.state], ['Tasks', r => fmt(r.issues)], ['Checks', r => fmt(r.checks), r => r.checks], ['Rejected', r => `${fmt(r.rejected)} (${pct(r.rejected, r.checks)})`],
       ['Hand-offs', r => fmt(r.handoffs)], ['First try', r => pct(r.first_try_handoffs, r.handoffs)], ['Avg check', r => dur(r.avg_seconds)],
       ['Rejected for', r => Object.entries(r.rejections_by_category).map(([k, v]) => `${k} ×${v}`).join(', ') || '–', null, 'wrap']], m.by_gate ?? [], 'No gate has run yet. Gates are set in the workflow\'s gates section.'));
+    const w = m.rework, sev = o => ['critical', 'major', 'minor'].filter(k => o?.[k]).map(k => `${k} ${o[k]}`).join(' · ') || '–';
+    const counts = o => Object.entries(o ?? {}).map(([k, v]) => `${k} ×${v}`).join(', ') || '–';
+    if (!w) {
+      $('rework-tiles').replaceChildren();
+      for (const id of ['categories', 'sources', 'loops']) $(id).replaceChildren(el('div', 'empty', id === 'categories' ? 'No loops or rework yet. Defect reports need the workflow\'s defects section.' : ''));
+    } else {
+      $('rework-tiles').replaceChildren(
+        tile('Loops', fmt(w.loops), `${fmt(w.defects)} defects · ${sev(w.by_severity)}`),
+        tile('Tasks sent back', fmt(w.issues_with_loops), `of ${fmt(t.issues)} worked`),
+        tile('Closed without rework', pct(w.closed_without_rework, w.closed_issues), `${fmt(w.closed_without_rework)} of ${fmt(w.closed_issues)} closed`),
+        tile('Avg triage', dur(w.avg_triage_seconds), 'then ' + (Object.entries(w.next_states).map(([k, v]) => `${v} ${k}`).join(' · ') || '–')),
+        tile('Loop rework', short(w.loop_rework_tokens), `${fmt(w.loop_rework_runs)} runs · ${dur(w.loop_rework_seconds)}`),
+        tile('Unexplained rework', fmt(w.other_rework_runs) + ' runs', `${short(w.other_rework_tokens)} tokens, no defect report`));
+      $('categories').replaceChildren(table([
+        ['Category', r => r.category], ['Defects', r => fmt(r.defects), r => r.defects], ['Severity', r => sev(r.severities)], ['Loops', r => fmt(r.loops)], ['Tasks', r => fmt(r.issues)],
+        ['Rework tokens', r => short(r.rework_tokens), r => r.rework_tokens]], w.by_category, 'No defects reported yet.'));
+      $('sources').replaceChildren(table([
+        ['Status', r => r.state || '–'], ['Model', r => r.model], ['Loops', r => fmt(r.loops), r => r.loops], ['Defects', r => fmt(r.defects)]], w.by_source, 'No loops yet.'));
+      $('loops').replaceChildren(table([
+        ['When', r => new Date(r.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })], ['Task', r => r.identifier],
+        ['Sent back', r => `${r.from_state} → ${r.state}`, null, 'wrap'], ['Defects', r => counts(r.categories), null, 'wrap'], ['Severity', r => sev(r.severities), null, 'wrap'],
+        ['Work by', r => r.work_model ? `${r.work_model} in ${r.work_state}` : '–', null, 'wrap'], ['Triage', r => r.next_state ? dur(r.triage_seconds) : 'waiting'], ['Next', r => r.next_state ?? '–'],
+        ['Rework', r => r.rework_runs ? `${fmt(r.rework_runs)} runs · ${short(r.rework_tokens)}` : '–']], w.recent, 'No loops yet.'));
+    }
     $('models').replaceChildren(table([
       ['Model', r => r.model], ['Runs', r => fmt(r.runs)], ['Agent time', r => dur(r.agent_seconds)], ['Input', r => short(r.input_tokens)], ['Output', r => short(r.output_tokens)],
       ['Tokens', r => short(r.total_tokens), r => r.total_tokens]], m.by_model, 'No finished runs yet.'));
     $('days').replaceChildren(table([
       ['Day', r => r.day], ['Runs', r => fmt(r.runs)], ['Closed', r => fmt(r.closed_issues)], ['Agent time', r => dur(r.agent_seconds)], ['Tokens', r => short(r.total_tokens), r => r.total_tokens]], m.by_day, ''));
     $('issues').replaceChildren(table([
-      ['Task', r => r.identifier], ['Statuses', r => r.states.map(s => `${s.state} ×${s.runs}`).join(', '), null, 'wrap'], ['Runs', r => fmt(r.runs)], ['Failed', r => fmt(r.failed_runs)], ['Rework', r => fmt(r.rework_runs)],
+      ['Task', r => r.identifier], ['Statuses', r => r.states.map(s => `${s.state} ×${s.runs}`).join(', '), null, 'wrap'], ['Runs', r => fmt(r.runs)], ['Failed', r => fmt(r.failed_runs)], ['Rework', r => fmt(r.rework_runs)], ['Loops', r => fmt(r.loops)],
       ['Gate rejections', r => fmt(r.gate_rejections)], ['Agent time', r => dur(r.agent_seconds)], ['Tokens', r => short(r.total_tokens), r => r.total_tokens], ['Cycle time', r => r.closed_at ? dur(r.cycle_seconds) : 'open']], m.issues, 'No finished runs yet.'));
   } catch (e) { $('error').className = 'banner show'; $('error').textContent = `Can't load the metrics: ${e.message}`; }
 }

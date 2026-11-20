@@ -11,6 +11,8 @@ namespace Symphony.Core.Orchestration;
 /// Symphony let go of an issue that is still open, <c>closed</c> when an issue reached a terminal state, and
 /// <c>gate</c> for a verification gate run: <see cref="State"/> is the gate's status, <see cref="FromState"/>
 /// the status the issue was in, and <see cref="Outcome"/> <c>passed</c> or the failed check's category.
+/// <c>defects</c> is a rework loop (docs/rework-loops.md): an agent sent the issue back from <see cref="FromState"/>
+/// to <see cref="State"/>; <see cref="DefectCounts"/> is the number of defects it reported per category and severity.
 /// </summary>
 public sealed record MetricRecord(
     string Kind,
@@ -37,6 +39,10 @@ public sealed record MetricRecord(
     public const string Closed = "closed";
     public const string Gate = "gate";
     public const string GatePassed = "passed";
+    public const string Defects = "defects";
+
+    // Category -> severity -> number of defects.
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<string, int>>? DefectCounts { get; init; }
 }
 
 public static class RunOutcomes
@@ -120,7 +126,8 @@ public sealed record IssueMetrics(
     DateTimeOffset? ClosedAt,
     double? CycleSeconds,
     IReadOnlyList<IssueStateMetrics> States,
-    int GateRejections = 0);
+    int GateRejections = 0,
+    int Loops = 0);
 
 public sealed record MetricsReport(
     DateTimeOffset GeneratedAt,
@@ -131,7 +138,69 @@ public sealed record MetricsReport(
     IReadOnlyList<DayMetrics> ByDay,
     IReadOnlyList<IssueMetrics> Issues,
     BudgetStatus? Budget,
-    IReadOnlyList<GateMetrics>? ByGate = null);
+    IReadOnlyList<GateMetrics>? ByGate = null,
+    ReworkMetrics? Rework = null);
+
+/// <summary>
+/// One rework loop: an agent sent the issue back from <see cref="FromState"/> to <see cref="State"/> with
+/// <see cref="Defects"/> defects. <see cref="WorkModel"/> and <see cref="WorkState"/> are the run whose work was sent
+/// back (the latest one before, in another status). <see cref="TriageSeconds"/> runs from the send-back to the next
+/// agent run, which started in <see cref="NextState"/>; null while nobody has picked it up. The rework fields add up the
+/// rework runs from then until the issue gets past <see cref="FromState"/> again.
+/// </summary>
+public sealed record LoopMetrics(
+    string IssueId,
+    string Identifier,
+    DateTimeOffset At,
+    string? FromState,
+    string? State,
+    int Defects,
+    // Category -> severity -> number of defects.
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, int>> DefectCounts,
+    string? ReportedBy,
+    string? WorkModel,
+    string? WorkState,
+    double? TriageSeconds,
+    string? NextState,
+    int ReworkRuns,
+    long ReworkTokens,
+    double ReworkSeconds)
+{
+    public IReadOnlyDictionary<string, int> Categories => Symphony.Core.Defects.DefectReport.CategoriesOf(DefectCounts);
+
+    public IReadOnlyDictionary<string, int> Severities => Symphony.Core.Defects.DefectReport.SeveritiesOf(DefectCounts);
+}
+
+/// <summary>
+/// Defects of one category across all loops. <see cref="ReworkTokens"/> is the rework of the loops this category
+/// was part of; a loop with several categories counts for each, so the column doesn't add up to the total.
+/// </summary>
+public sealed record DefectCategoryMetrics(string Category, int Defects, int Loops, int Issues, IReadOnlyDictionary<string, int> Severities, long ReworkTokens);
+
+/// <summary>Loops by the run whose work was sent back: its status and model.</summary>
+public sealed record LoopSourceMetrics(string State, string Model, int Loops, int Defects);
+
+/// <summary>
+/// Why work goes back (docs/rework-loops.md). <see cref="OtherReworkRuns"/> are rework runs that no defect report
+/// explains: a person sent the issue back, for example from review.
+/// </summary>
+public sealed record ReworkMetrics(
+    int Loops,
+    int Defects,
+    int IssuesWithLoops,
+    int ClosedIssues,
+    int ClosedWithoutRework,
+    double? AvgTriageSeconds,
+    int LoopReworkRuns,
+    long LoopReworkTokens,
+    double LoopReworkSeconds,
+    int OtherReworkRuns,
+    long OtherReworkTokens,
+    IReadOnlyDictionary<string, int> BySeverity,
+    IReadOnlyList<DefectCategoryMetrics> ByCategory,
+    IReadOnlyList<LoopSourceMetrics> BySource,
+    IReadOnlyDictionary<string, int> NextStates,
+    IReadOnlyList<LoopMetrics> Recent);
 
 /// <summary>
 /// The history behind <c>/api/v1/metrics</c>: an append-only JSON-lines file next to the workspaces, one line
@@ -295,6 +364,8 @@ public sealed class MetricsLog(ILogger logger)
             .GroupBy(r => r.IssueId)
             .ToDictionary(g => g.Key, g => g.Max(r => r.At));
 
+        var (loops, otherRework) = Loops(records);
+        var loopsByIssue = loops.GroupBy(l => l.IssueId).ToDictionary(g => g.Key, g => g.Count());
         var issues = runs.GroupBy(r => r.IssueId).Select(g =>
         {
             var first = g.Min(r => r.StartedAt ?? r.At);
@@ -313,7 +384,8 @@ public sealed class MetricsLog(ILogger logger)
                 closed,
                 closed is { } at ? Round((at - first).TotalSeconds) : null,
                 g.GroupBy(r => r.State ?? "").Select(s => new IssueStateMetrics(s.Key, s.Count(), Round(s.Sum(r => r.Seconds)), s.Sum(r => r.TotalTokens))).ToList(),
-                rejectionsByIssue.GetValueOrDefault(g.Key));
+                rejectionsByIssue.GetValueOrDefault(g.Key),
+                loopsByIssue.GetValueOrDefault(g.Key));
         }).ToList();
 
         var cycles = issues.Where(i => i.CycleSeconds is not null).Select(i => i.CycleSeconds!.Value).ToList();
@@ -377,7 +449,157 @@ public sealed class MetricsLog(ILogger logger)
             byDay,
             issues.OrderByDescending(i => i.LastActivityAt).Take(ReportIssues).ToList(),
             budget,
-            ByGate(gateChecks));
+            ByGate(gateChecks),
+            Rework(loops, otherRework, issues));
+    }
+
+    private const int ReportLoops = 30;
+    private const string Waiting = "waiting";
+
+    private sealed class OpenLoop(MetricRecord report, MetricRecord? work)
+    {
+        public MetricRecord Report { get; } = report;
+        public MetricRecord? Work { get; } = work;
+        public MetricRecord? Next { get; set; }
+        public bool Retested { get; set; }
+        public int Runs { get; set; }
+        public long Tokens { get; set; }
+        public double Seconds { get; set; }
+    }
+
+    /// <summary>
+    /// Pairs each <c>defects</c> record with what followed: the next run (triage), and the rework runs until the
+    /// issue gets past the stage that sent it back. Rework runs outside any loop are returned separately.
+    /// </summary>
+    private static (List<LoopMetrics> Loops, List<MetricRecord> Other) Loops(List<MetricRecord> records)
+    {
+        var loops = new List<LoopMetrics>();
+        var other = new List<MetricRecord>();
+        foreach (var issue in records.GroupBy(r => r.IssueId))
+        {
+            OpenLoop? open = null;
+            MetricRecord? lastRun = null;
+            var history = new List<MetricRecord>();
+            void Close()
+            {
+                if (open is null) return;
+                var r = open.Report;
+                var next = open.Next;
+                loops.Add(new LoopMetrics(
+                    r.IssueId, r.Identifier, r.At, r.FromState, r.State,
+                    r.DefectCounts?.Values.Sum(c => c.Values.Sum()) ?? 0,
+                    r.DefectCounts ?? new Dictionary<string, IReadOnlyDictionary<string, int>>(),
+                    r.Model,
+                    open.Work is null ? null : open.Work.Model ?? DefaultModel,
+                    open.Work?.State,
+                    next is null ? null : Round(((next.StartedAt ?? next.At) - r.At).TotalSeconds),
+                    next?.State,
+                    open.Runs,
+                    open.Tokens,
+                    Round(open.Seconds)));
+                open = null;
+            }
+
+            foreach (var rec in issue)
+            {
+                switch (rec.Kind)
+                {
+                    case MetricRecord.Defects:
+                        Close();
+                        // The work sent back: the latest run before the report, in a status other than the reporter's.
+                        var from = StateNames.Normalize(rec.FromState);
+                        var work = history.LastOrDefault(h => StateNames.Normalize(h.State) != from && (h.StartedAt ?? h.At) <= rec.At);
+                        open = new OpenLoop(rec, work);
+                        break;
+
+                    case MetricRecord.Run:
+                        history.Add(rec);
+                        lastRun = rec;
+                        // The run that made the report ended after it; only runs started since belong to the loop.
+                        if (open is not null && (rec.StartedAt ?? rec.At) >= open.Report.At)
+                        {
+                            open.Next ??= rec;
+                            if (StateNames.Normalize(rec.State) == StateNames.Normalize(open.Report.FromState))
+                            {
+                                open.Retested = true;
+                            }
+
+                            if (rec.Rework)
+                            {
+                                open.Runs++;
+                                open.Tokens += rec.TotalTokens;
+                                open.Seconds += rec.Seconds;
+                            }
+                        }
+                        else if (rec.Rework)
+                        {
+                            other.Add(rec);
+                        }
+
+                        break;
+
+                    case MetricRecord.Handoff when open is { Retested: true }
+                        && StateNames.Normalize(rec.State) != StateNames.Normalize(open.Report.State):
+                    case MetricRecord.Closed:
+                        // Past the stage that sent it back, or done: later rework is someone else's send-back.
+                        Close();
+                        break;
+                }
+            }
+
+            Close();
+        }
+
+        return (loops, other);
+    }
+
+    private static ReworkMetrics? Rework(List<LoopMetrics> loops, List<MetricRecord> other, List<IssueMetrics> issues)
+    {
+        if (loops.Count == 0 && other.Count == 0)
+        {
+            return null;
+        }
+
+        static IReadOnlyDictionary<string, int> Sum(IEnumerable<IReadOnlyDictionary<string, int>> counts) =>
+            Symphony.Core.Defects.DefectReport.SeveritiesOf(new Dictionary<string, IReadOnlyDictionary<string, int>> { [""] = counts.SelectMany(c => c)
+                .GroupBy(kv => kv.Key).ToDictionary(g => g.Key, g => g.Sum(kv => kv.Value)) });
+
+        var triage = loops.Where(l => l.TriageSeconds is not null).Select(l => l.TriageSeconds!.Value).ToList();
+        var closed = issues.Where(i => i.ClosedAt is not null).ToList();
+        var byCategory = loops
+            .SelectMany(l => l.DefectCounts.Select(c => (Loop: l, Category: c.Key, Severities: c.Value)))
+            .GroupBy(x => x.Category)
+            .Select(g => new DefectCategoryMetrics(
+                g.Key,
+                g.Sum(x => x.Severities.Values.Sum()),
+                g.Count(),
+                g.Select(x => x.Loop.IssueId).Distinct().Count(),
+                Sum(g.Select(x => x.Severities)),
+                g.Sum(x => x.Loop.ReworkTokens)))
+            .OrderByDescending(c => c.Defects).ThenBy(c => c.Category, StringComparer.Ordinal).ToList();
+        var bySource = loops
+            .GroupBy(l => (State: l.WorkState ?? "", Model: l.WorkModel ?? DefaultModel))
+            .Select(g => new LoopSourceMetrics(g.Key.State, g.Key.Model, g.Count(), g.Sum(l => l.Defects)))
+            .OrderByDescending(s => s.Loops).ThenBy(s => s.State, StringComparer.Ordinal).ToList();
+        var next = loops.GroupBy(l => l.NextState ?? Waiting).OrderByDescending(g => g.Count()).ToDictionary(g => g.Key, g => g.Count());
+
+        return new ReworkMetrics(
+            loops.Count,
+            loops.Sum(l => l.Defects),
+            loops.Select(l => l.IssueId).Distinct().Count(),
+            closed.Count,
+            closed.Count(i => i.ReworkRuns == 0 && i.Loops == 0),
+            triage.Count > 0 ? Round(triage.Average()) : null,
+            loops.Sum(l => l.ReworkRuns),
+            loops.Sum(l => l.ReworkTokens),
+            Round(loops.Sum(l => l.ReworkSeconds)),
+            other.Count,
+            other.Sum(r => r.TotalTokens),
+            Sum(loops.Select(l => l.Severities)),
+            byCategory,
+            bySource,
+            next,
+            loops.OrderByDescending(l => l.At).Take(ReportLoops).ToList());
     }
 
     private static List<GateMetrics> ByGate(List<MetricRecord> checks) =>

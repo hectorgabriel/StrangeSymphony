@@ -111,6 +111,12 @@ public sealed class AgentWorker(
             sessionTracker = new GatedTracker(sessionTracker, gates, workspace.Path, config.Hooks.Shell, logger, onEvent, config.StrippedEnvironment);
         }
 
+        if (config.Defects is { } defects)
+        {
+            // Outside the gates, so a missing defect report is refused before a gate runs; see docs/rework-loops.md.
+            sessionTracker = new Defects.DefectTracker(sessionTracker, defects, onEvent);
+        }
+
         // Outermost, so the audit trail sees what the agent got back, including a gate's refusal.
         sessionTracker = new Audit.AuditedTracker(sessionTracker, onEvent);
 

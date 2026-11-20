@@ -1,6 +1,6 @@
 # Sample metrics and audit trail
 
-Made-up data for checking the Metrics page (`/line`), the audit page (`/audit`) and their APIs without running real agents: 14 tasks over the last 13 days of the SDLC pipeline, with runs per model, hand-offs, rework, a failed run, resumed sessions, closed tasks and verification gate checks, including rejections of every kind. The audit trail covers the same events, with agent moves and comments, people's moves and pull requests, and its hash chain is intact.
+Made-up data for checking the Metrics page (`/line`), the audit page (`/audit`) and their APIs without running real agents: 15 tasks over the last 13 days of the SDLC pipeline, with runs per model, hand-offs, rework, defect reports before Con Defectos (one still waiting for triage) and a reviewer's send-back without one, a failed run, resumed sessions, closed tasks and verification gate checks, including rejections of every kind. The audit trail covers the same events, with agent moves and comments, people's moves and pull requests, and its hash chain is intact.
 
 ```sh
 python3 tools/sample-metrics/generate.py                       # writes .symphony-metrics.jsonl and .symphony-audit.jsonl to tools/sample-metrics/ws/

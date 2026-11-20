@@ -41,6 +41,12 @@ public sealed class AuditedTracker(ITrackerAdapter inner, Action<AgentEvent> onE
         }
 
         var category = result.Success ? null : result.Output?["error"]?["category"]?.GetValue<string>() ?? "failed";
+        if (name == Defects.DefectTracker.ReportTool && result.Success && result.Output is JsonObject counted)
+        {
+            // Only fixed category and severity names, so the counts are kept instead of fingerprints.
+            args = new JsonObject { ["categories"] = counted["categories"]?.DeepClone(), ["severities"] = counted["severities"]?.DeepClone() };
+        }
+
         Report(name, args, issue, result.Success, category, result.Output as JsonObject);
         return result;
     }
