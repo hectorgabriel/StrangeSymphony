@@ -90,6 +90,7 @@ public sealed partial class ConfigBuilder(
         var workspaceRoot = rootRaw is null
             ? Path.Combine(Path.GetTempPath(), "symphony_workspaces")
             : ResolvePath(rootRaw, workflowDir, "workspace.root");
+        var stripEnv = StripEnv(workspace);
 
         // hooks
         var hooks = Section(root, "hooks");
@@ -163,7 +164,32 @@ public sealed partial class ConfigBuilder(
             warnings,
             pullRequest,
             budgetSettings,
-            gates);
+            gates,
+            stripEnv);
+    }
+
+    /// <summary><c>workspace.strip_env</c> (extension; docs/data-isolation.md): names or <c>*</c> patterns.</summary>
+    private static List<string> StripEnv(IReadOnlyDictionary<string, object?> workspace)
+    {
+        const string field = "workspace.strip_env";
+        var list = workspace.TryGetValue("strip_env", out var raw) && raw is string one
+            ? [one]
+            : StringList(workspace, field, "strip_env") ?? [];
+        foreach (var pattern in list)
+        {
+            if (string.IsNullOrWhiteSpace(pattern) || pattern != pattern.Trim() || pattern.Contains('='))
+            {
+                throw Invalid(field, $"'{pattern}' is not a variable name or pattern");
+            }
+
+            // A pattern that takes PATH or HOME with it leaves the agent, hooks and builds unable to start.
+            if (Util.EnvironmentFilter.Matches("PATH", pattern) || Util.EnvironmentFilter.Matches("HOME", pattern))
+            {
+                throw Invalid(field, $"'{pattern}' would also strip PATH or HOME; name the variables more narrowly");
+            }
+        }
+
+        return list.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     /// <summary>Time a gate may use on top of its commands' <c>timeout_ms</c>, for the git checks.</summary>

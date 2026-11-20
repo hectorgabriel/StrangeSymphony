@@ -57,7 +57,7 @@ public sealed class AgentWorker(
         try
         {
             if (config.Hooks.BeforeRun is { } beforeRun
-                && !await workspaces.RunHookAsync("before_run", beforeRun, workspace.Path, issue.Identifier, config.Hooks, ct))
+                && !await workspaces.RunHookAsync("before_run", beforeRun, workspace.Path, issue.Identifier, config.Hooks, ct, config.StrippedEnvironment))
             {
                 throw new WorkerFailedException("before_run hook error");
             }
@@ -70,7 +70,7 @@ public sealed class AgentWorker(
             // after_run runs after success, failure, timeout or cancellation once the workspace exists.
             if (config.Hooks.AfterRun is { } afterRun)
             {
-                await workspaces.RunHookAsync("after_run", afterRun, workspace.Path, issue.Identifier, config.Hooks, CancellationToken.None);
+                await workspaces.RunHookAsync("after_run", afterRun, workspace.Path, issue.Identifier, config.Hooks, CancellationToken.None, config.StrippedEnvironment);
             }
         }
     }
@@ -92,7 +92,9 @@ public sealed class AgentWorker(
         ToolAugmentedTracker? tools;
         try
         {
-            tools = workspaceTools?.Create(config, workspace.Path, issue, workflow.Tracker.SecretEnvironmentNames()) is { } extra
+            // Code the agent wrote must see neither the tracker's credentials nor what the workflow strips.
+            IReadOnlyList<string> hostSecrets = [.. workflow.Tracker.SecretEnvironmentNames(), .. config.StrippedEnvironment];
+            tools = workspaceTools?.Create(config, workspace.Path, issue, hostSecrets) is { } extra
                 ? new ToolAugmentedTracker(workflow.Tracker, extra)
                 : null;
         }
@@ -106,7 +108,7 @@ public sealed class AgentWorker(
         if (config.Gates is { Count: > 0 } gates)
         {
             // State changes go through the host's verification gates; see docs/verification-gates.md.
-            sessionTracker = new GatedTracker(sessionTracker, gates, workspace.Path, config.Hooks.Shell, logger, onEvent);
+            sessionTracker = new GatedTracker(sessionTracker, gates, workspace.Path, config.Hooks.Shell, logger, onEvent, config.StrippedEnvironment);
         }
 
         async Task<IAgentSession> StartAsync(string? resumeId)

@@ -185,17 +185,15 @@ public static class ShellRunner
     /// <summary>
     /// Runs <paramref name="script"/>. Output past <see cref="MaxCapturedChars"/> is dropped from the end, or
     /// from the start when <paramref name="keepTail"/> is set (build logs put their errors last).
-    /// Names in <paramref name="removeEnvironment"/> are removed from the child's environment: use it when the
-    /// script runs code the agent wrote, which must not see host credentials.
+    /// Variables matching <paramref name="removeEnvironment"/> (names, or <see cref="EnvironmentFilter"/> patterns)
+    /// are removed from the child's environment: use it when the script runs code the agent wrote, which must not
+    /// see host credentials.
     /// </summary>
     public static async Task<ShellResult> RunAsync(string script, string cwd, int timeoutMs, CancellationToken ct, string shell = Auto, bool keepTail = false,
         IEnumerable<string>? removeEnvironment = null)
     {
         var (psi, scriptFile) = ShellStartInfo(script, cwd, shell);
-        foreach (var name in removeEnvironment ?? [])
-        {
-            psi.Environment.Remove(name);
-        }
+        EnvironmentFilter.Remove(psi.Environment, removeEnvironment ?? []);
 
         try
         {

@@ -46,9 +46,9 @@ public sealed class AgentWorkerTests : IDisposable
     private readonly TempWorkflow _tmp = new("tracker: {kind: fake}");
     private readonly FakeTracker _tracker = new();
 
-    private EffectiveWorkflow Workflow(string extra = "", string body = "Fix {{ issue.identifier }} attempt={{ attempt }}")
+    private EffectiveWorkflow Workflow(string extra = "", string body = "Fix {{ issue.identifier }} attempt={{ attempt }}", string workspace = "")
     {
-        _tmp.Write($"tracker: {{kind: fake}}\nworkspace: {{root: \"{{ROOT}}\"}}\n{extra}", body);
+        _tmp.Write($"tracker: {{kind: fake}}\nworkspace: {{root: \"{{ROOT}}\"{workspace}}}\n{extra}", body);
         var store = _tmp.Store(_tracker);
         return store.LoadInitial();
     }
@@ -119,6 +119,42 @@ public sealed class AgentWorkerTests : IDisposable
             .RunAsync(issue, null, Workflow(), _ => { }, _ => { }, default);
 
         Assert.Equal(["FAKE_TRACKER_TOKEN"], tools.HostSecrets);
+    }
+
+    [Fact]
+    public async Task Workspace_tools_are_told_the_stripped_variables_too()
+    {
+        var issue = TestIssues.Make("1", state: "Done");
+        _tracker.Put(issue);
+        var tools = new RecordingToolsFactory();
+
+        await new AgentWorker(new WorkspaceManager(NullLogger<WorkspaceManager>.Instance), new FakeFactory([]), NullLogger<AgentWorker>.Instance, tools)
+            .RunAsync(issue, null, Workflow(workspace: ", strip_env: [ConnectionStrings__*]"), _ => { }, _ => { }, default);
+
+        Assert.Equal(["FAKE_TRACKER_TOKEN", "ConnectionStrings__*"], tools.HostSecrets);
+    }
+
+    [Fact]
+    public async Task Hooks_run_without_the_stripped_variables()
+    {
+        const string name = "SYMPHONY_HOOK_TEST_DATABASE_URL";
+        Environment.SetEnvironmentVariable(name, "postgres://db");
+        try
+        {
+            var issue = TestIssues.Make("1", state: "Done");
+            _tracker.Put(issue);
+            // before_run fails if it can see the variable, and a failed before_run fails the worker.
+            var wf = Workflow($"hooks:\n  before_run: test -z \"${name}\"", workspace: ", strip_env: [\"*_DATABASE_URL\"]");
+
+            await Worker(new FakeFactory([])).RunAsync(issue, null, wf, _ => { }, _ => { }, default);
+
+            var unstripped = Workflow($"hooks:\n  before_run: test -z \"${name}\"");
+            await Assert.ThrowsAsync<WorkerFailedException>(() => Worker(new FakeFactory([])).RunAsync(issue, null, unstripped, _ => { }, _ => { }, default));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(name, null);
+        }
     }
 
     [Fact]
@@ -280,6 +316,19 @@ public class ExampleWorkflowTests
         Assert.Empty(config.GateFor("Con Defectos")!.Run);
         Assert.Null(config.GateFor("Requiere Informacion"));
         Assert.Empty(config.Warnings);
+    }
+
+    [Fact]
+    public void Sdlc_example_workflow_strips_the_usual_database_credentials()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "WORKFLOW.sdlc.example.md");
+        var config = new Symphony.Core.Config.ConfigBuilder(
+            [new Symphony.Wrike.WrikeAdapterFactory()],
+            n => n == "WRIKE_TOKEN" ? "token" : null).Build(WorkflowLoader.Load(path), path);
+
+        string[] names = ["ConnectionStrings__Ventas", "VENTAS_CONNECTION_STRING", "DATABASE_URL", "REPORTS_DATABASE_URL", "PGPASSWORD", "SQLCMDPASSWORD"];
+        Assert.All(names, n => Assert.True(Symphony.Core.Util.EnvironmentFilter.MatchesAny(n, config.StrippedEnvironment), n));
+        Assert.False(Symphony.Core.Util.EnvironmentFilter.MatchesAny("WRIKE_TOKEN", config.StrippedEnvironment));
     }
 
     [Fact]

@@ -262,6 +262,25 @@ public sealed class VerificationGateTests : IDisposable
     }
 
     [Fact]
+    public async Task Gate_commands_lose_the_variables_the_workflow_strips()
+    {
+        CommitAndPush();
+        const string name = "SYMPHONY_GATE_TEST_DB_URL";
+        Environment.SetEnvironmentVariable(name, "Server=db");
+        try
+        {
+            var gates = new[] { Gate(run: [$"test -z \"${name}\""]) }.ToDictionary(g => StateNames.Normalize(g.State));
+            var tracker = new GatedTracker(new StateTracker(), gates, _git.Work, ShellRunner.Auto, NullLogger.Instance, stripEnvironment: ["*_DB_URL"]);
+            var result = await Move(tracker, "Por Probar");
+            Assert.True(result.Success, result.Output?.ToJsonString());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(name, null);
+        }
+    }
+
+    [Fact]
     public void The_update_state_spec_names_the_gated_states_and_allows_for_the_gate()
     {
         var tracker = Gated(new StateTracker(), null, Gate(timeoutMs: 600000, run: ["dotnet test"]), Gate("En Revision", run: ["dotnet test"]));

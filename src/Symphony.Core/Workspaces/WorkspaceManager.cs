@@ -101,7 +101,7 @@ public sealed class WorkspaceManager(ILogger<WorkspaceManager> logger)
 
         if (createdNow && config.Hooks.AfterCreate is { } afterCreate)
         {
-            var ok = await RunHookAsync("after_create", afterCreate, path, identifier, config.Hooks, ct);
+            var ok = await RunHookAsync("after_create", afterCreate, path, identifier, config.Hooks, ct, config.StrippedEnvironment);
             if (!ok)
             {
                 TryDelete(path);
@@ -112,7 +112,8 @@ public sealed class WorkspaceManager(ILogger<WorkspaceManager> logger)
         return new Workspace(path, key, createdNow);
     }
 
-    public async Task<bool> RunHookAsync(string name, string script, string cwd, string identifier, HookSettings hooks, CancellationToken ct)
+    public async Task<bool> RunHookAsync(
+        string name, string script, string cwd, string identifier, HookSettings hooks, CancellationToken ct, IReadOnlyList<string>? removeEnvironment = null)
     {
         var timeoutMs = hooks.TimeoutMs;
         logger.LogInformation("action=hook hook={Hook} outcome=started issue_identifier={IssueIdentifier}", name, identifier);
@@ -120,7 +121,7 @@ public sealed class WorkspaceManager(ILogger<WorkspaceManager> logger)
         try
         {
             WarnOnShellFallback(hooks.Shell);
-            result = await ShellRunner.RunAsync(script, cwd, timeoutMs, ct, hooks.Shell);
+            result = await ShellRunner.RunAsync(script, cwd, timeoutMs, ct, hooks.Shell, removeEnvironment: removeEnvironment);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -167,7 +168,7 @@ public sealed class WorkspaceManager(ILogger<WorkspaceManager> logger)
 
         if (config.Hooks.BeforeRemove is { } beforeRemove)
         {
-            await RunHookAsync("before_remove", beforeRemove, path, identifier, config.Hooks, ct);
+            await RunHookAsync("before_remove", beforeRemove, path, identifier, config.Hooks, ct, config.StrippedEnvironment);
         }
 
         if (TryDelete(path))

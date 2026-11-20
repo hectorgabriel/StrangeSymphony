@@ -44,7 +44,7 @@ Why these checks run on the host and not in the prompt:
 
 - **The agent can't vouch for its own build.** It may have compiled one project, or the wrong commit. The host builds exactly the commit it is about to propose.
 - **Diffs that carry build output get stopped.** A repository without a `.gitignore` plus `git add -A` sends `packages/` and `bin/` to review; `forbidden_paths` and `max_files` catch it before the build even starts.
-- **The token stays with the host.** The PAT is read by Symphony, used only for the provider's REST calls, and removed from the agent's environment along with the tracker's credentials. Both are also removed from `verify_command`'s environment, because the build and tests it runs include code the agent wrote.
+- **The token stays with the host.** The PAT is read by Symphony, used only for the provider's REST calls, and removed from the agent's environment along with the tracker's credentials. Both are also removed from `verify_command`'s environment, because the build and tests it runs include code the agent wrote. So are the variables in `workspace.strip_env` ([data-isolation.md](data-isolation.md)).
 
 ## Paths in `forbidden_paths`
 

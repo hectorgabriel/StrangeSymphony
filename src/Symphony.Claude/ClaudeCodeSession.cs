@@ -58,10 +58,8 @@ public sealed class ClaudeCodeSessionFactory(IToolGateway? toolGateway, string p
             var args = ClaudeCommandLine.BuildArgs(config.Claude, request.Issue.State, sessionId, mcpConfigPath, hasTools, $"{request.Issue.Identifier}: {request.Issue.Title}",
                 resume: request.ResumeSessionId is not null);
             var psi = ClaudeCommandLine.StartInfo(config.Claude.Command, args, cwd, config.Hooks.Shell);
-            foreach (var name in request.Tracker.SecretEnvironmentNames().Concat(AlwaysStripped))
-            {
-                psi.Environment.Remove(name);
-            }
+            // The tracker's credentials, and what the workflow strips from every workspace process (workspace.strip_env).
+            EnvironmentFilter.Remove(psi.Environment, [.. request.Tracker.SecretEnvironmentNames(), .. AlwaysStripped, .. config.StrippedEnvironment]);
 
             await session.StartAsync(psi, sessionId, endpoint, mcpConfigPath, ct);
             return session;
