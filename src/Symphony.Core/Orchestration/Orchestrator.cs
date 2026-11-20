@@ -68,9 +68,11 @@ public sealed class Orchestrator
         public required DateTimeOffset StartedAt { get; init; }
         public required CancellationTokenSource Cts { get; init; }
         public required WorkflowLease Lease { get; init; }
-        /// <summary>The state and model the session was started for; <see cref="Issue"/> follows the tracker afterwards.</summary>
+        /// <summary>The state and route the session was started for; <see cref="Issue"/> follows the tracker afterwards.</summary>
         public required string DispatchState { get; init; }
-        public string? Model { get; init; }
+        public required AgentRoute Route { get; init; }
+        public string Runner => Route.Runner;
+        public string? Model => Route.Model;
         public bool Resumed { get; init; }
         public int TurnsCompleted { get; set; }
         public Task? Worker { get; set; }
@@ -118,6 +120,7 @@ public sealed class Orchestrator
         public string? ResumeSessionId { get; set; }
         public string? ResumeState { get; set; }
         public string? ResumeModel { get; set; }
+        public string? ResumeRunner { get; set; }
         public Queue<RecentEvent> Events { get; } = new();
     }
 
@@ -504,7 +507,7 @@ public sealed class Orchestrator
 
     private void ReconcileStalled(ServiceConfig config)
     {
-        var stallMs = config.Claude.StallTimeoutMs;
+        var stallMs = config.RunnerSettings.StallTimeoutMs;
         if (stallMs <= 0)
         {
             return;
@@ -558,8 +561,9 @@ public sealed class Orchestrator
     private void Dispatch(Issue issue, EffectiveWorkflow workflow, int? attempt)
     {
         var track = Track(issue);
-        var model = workflow.Config.Claude.ModelFor(issue.State);
-        var resume = ResumeFor(track, issue, workflow.Config, model);
+        var route = workflow.Config.RouteFor(issue.State);
+        var model = route.Model;
+        var resume = ResumeFor(track, issue, workflow.Config, route);
         ObserveState(issue, _time.GetUtcNow());
         var entry = new RunningEntry
         {
@@ -570,7 +574,7 @@ public sealed class Orchestrator
             Cts = new CancellationTokenSource(),
             Lease = _store.Acquire(workflow),
             DispatchState = issue.State,
-            Model = model,
+            Route = route,
             Resumed = resume is not null,
         };
 
@@ -586,7 +590,7 @@ public sealed class Orchestrator
         _logger.LogInformation("action=dispatch outcome=started issue_id={IssueId} issue_identifier={IssueIdentifier} state={State} attempt={Attempt} resume_session={Resume}",
             issue.Id, issue.Identifier, issue.State, attempt, resume);
         Audit(new AuditRecord(AuditRecord.Dispatched, AuditRecord.BySymphony, issue.Id, issue.Identifier, entry.StartedAt, issue.State,
-            RunId: entry.RunId.ToString(), SessionId: resume, Model: model, Attempt: attempt, Resumed: resume is not null));
+            RunId: entry.RunId.ToString(), SessionId: resume, Model: model, Attempt: attempt, Resumed: resume is not null, Runner: route.Runner));
 
         var id = issue.Id;
         var runId = entry.RunId;
@@ -615,14 +619,15 @@ public sealed class Orchestrator
     }
 
     /// <summary>
-    /// The session to continue (<c>claude.resume</c>): the issue's last one, when it ran in the same state with
-    /// the same model. A session that keeps ending without moving the issue gets a fresh start instead.
+    /// The session to continue (the runner's <c>resume</c>): the issue's last one, when it ran in the same state with
+    /// the same runner and model. A session that keeps ending without moving the issue gets a fresh start instead.
     /// </summary>
-    private static string? ResumeFor(IssueTrack track, Issue issue, ServiceConfig config, string? model) =>
-        config.Claude.Resume
+    private static string? ResumeFor(IssueTrack track, Issue issue, ServiceConfig config, AgentRoute route) =>
+        config.RunnerSettings.ResumeSessions
         && track.ResumeSessionId is { } id
         && track.ResumeState == StateNames.Normalize(issue.State)
-        && track.ResumeModel == model
+        && AgentRunners.Normalize(track.ResumeRunner) == route.Runner
+        && track.ResumeModel == route.Model
         && track.CleanExitsInState <= config.Agent.MaxFastContinuations
             ? id
             : null;
@@ -670,7 +675,7 @@ public sealed class Orchestrator
         {
             _metrics.Add(MetricsPath, new MetricRecord(
                 MetricRecord.Defects, m.IssueId, entry.Issue.Identifier, ev.Timestamp, defects.State,
-                Model: entry.Model, FromState: defects.FromState)
+                Model: entry.Model, FromState: defects.FromState, Runner: entry.Runner)
             {
                 DefectCounts = defects.Counts,
             });
@@ -679,7 +684,7 @@ public sealed class Orchestrator
         {
             Audit(new AuditRecord(AuditRecord.ToolCall, AuditRecord.ByAgent, m.IssueId, entry.Issue.Identifier, _time.GetUtcNow(), call.State, call.FromState,
                 RunId: entry.RunId.ToString(), SessionId: entry.ThreadId, Model: entry.Model, Tool: call.Tool, Args: call.Args, Ok: call.Ok,
-                Category: call.Category, Commit: call.Commit, Branch: call.Branch, Url: call.Url));
+                Category: call.Category, Commit: call.Commit, Branch: call.Branch, Url: call.Url, Runner: entry.Runner));
         }
 
         if (ev.ThreadId is not null && _tracks.TryGetValue(m.IssueId, out var resumable))
@@ -687,6 +692,7 @@ public sealed class Orchestrator
             resumable.ResumeSessionId = ev.ThreadId;
             resumable.ResumeState = StateNames.Normalize(entry.DispatchState);
             resumable.ResumeModel = entry.Model;
+            resumable.ResumeRunner = entry.Runner;
         }
 
         if (ev.AbsoluteTotals is { } totals)
@@ -1118,11 +1124,12 @@ public sealed class Orchestrator
             outcome,
             error is null ? null : Truncate(error, 300),
             e.Resumed,
-            _metrics.IsRework(e.Issue.Id, e.DispatchState)));
+            _metrics.IsRework(e.Issue.Id, e.DispatchState),
+            Runner: e.Runner));
         Audit(new AuditRecord(AuditRecord.RunEnded, AuditRecord.BySymphony, e.Issue.Id, e.Issue.Identifier, now, e.Issue.State,
             RunId: e.RunId.ToString(), SessionId: e.ThreadId, Model: e.Model, Attempt: e.RetryAttempt, Resumed: e.Resumed,
             Outcome: outcome, Error: error is null ? null : Truncate(error, 300), Turns: e.TurnCount, TotalTokens: e.TotalTokens,
-            Seconds: Math.Round(Math.Max(0, (now - e.StartedAt).TotalSeconds), 1)));
+            Seconds: Math.Round(Math.Max(0, (now - e.StartedAt).TotalSeconds), 1), Runner: e.Runner));
     }
 
     // ---- Audit trail (extension, docs/audit-trail.md) ----------------------------------------
@@ -1376,6 +1383,7 @@ public sealed class Orchestrator
                 ResumeSessionId = s.ResumeSessionId,
                 ResumeState = s.ResumeState,
                 ResumeModel = s.ResumeModel,
+                ResumeRunner = s.ResumeRunner,
             };
             _tracks[s.IssueId] = track;
 
@@ -1430,7 +1438,7 @@ public sealed class Orchestrator
         _tracks.TryGetValue(issueId, out var t);
         return new SavedIssue(issueId, identifier, url, kind, attempt, dueAt, error, state, sessionId,
             t?.WorkspacePath, t?.RestartCount ?? 0, t?.LastError, t?.CleanExitsInState ?? 0, t?.CleanExitState,
-            t?.ResumeSessionId, t?.ResumeState, t?.ResumeModel);
+            t?.ResumeSessionId, t?.ResumeState, t?.ResumeModel, t?.ResumeRunner);
     }
 
     // ---- Observability -----------------------------------------------------------------------
@@ -1578,7 +1586,9 @@ public sealed class Orchestrator
         e.LastEventAt,
         new TokenCounts(e.InputTokens, e.OutputTokens, e.TotalTokens),
         e.WorkspacePath,
-        e.Stop?.Reason);
+        e.Stop?.Reason,
+        e.Runner,
+        e.Model);
 
     private static string Describe(Exception ex) => ex switch
     {

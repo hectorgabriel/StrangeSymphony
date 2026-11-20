@@ -44,6 +44,8 @@ hooks:
     git fetch origin --prune && git status --short
 
 agent:
+  # The coding agent: claude (the section below). Default claude.
+  runner: claude
   max_concurrent_agents: 1
   max_turns: 10
   max_retry_backoff_ms: 300000

@@ -51,13 +51,13 @@ public sealed class ClaudeCodeSessionFactory(IToolGateway? toolGateway, string p
             if (hasTools)
             {
                 endpoint = toolGateway!.Register(request.Tracker, () => session.CurrentIssue, request.Issue.Identifier);
-                mcpConfigPath = WriteMcpConfig(endpoint);
+                mcpConfigPath = McpConfigFile.Write(privateStateDir, endpoint);
             }
 
             var sessionId = request.ResumeSessionId ?? Guid.NewGuid().ToString();
             var args = ClaudeCommandLine.BuildArgs(config.Claude, request.Issue.State, sessionId, mcpConfigPath, hasTools, $"{request.Issue.Identifier}: {request.Issue.Title}",
                 resume: request.ResumeSessionId is not null);
-            var psi = ClaudeCommandLine.StartInfo(config.Claude.Command, args, cwd, config.Hooks.Shell);
+            var psi = AgentProcess.StartInfo(config.Claude.Command, args, cwd, "claude.command", config.Hooks.Shell);
             // The tracker's credentials, and what the workflow strips from every workspace process (workspace.strip_env).
             EnvironmentFilter.Remove(psi.Environment, [.. request.Tracker.SecretEnvironmentNames(), .. AlwaysStripped, .. config.StrippedEnvironment]);
 
@@ -69,44 +69,6 @@ public sealed class ClaudeCodeSessionFactory(IToolGateway? toolGateway, string p
             await session.DisposeAsync();
             throw;
         }
-    }
-
-    private string WriteMcpConfig(ToolEndpoint endpoint)
-    {
-        var dir = Path.Combine(privateStateDir, "mcp");
-        Directory.CreateDirectory(dir);
-        if (!OperatingSystem.IsWindows())
-        {
-            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
-
-        var path = Path.Combine(dir, $"{Guid.NewGuid():N}.json");
-        var json = new JsonObject
-        {
-            ["mcpServers"] = new JsonObject
-            {
-                [ClaudeCommandLine.TrackerMcpServerName] = new JsonObject
-                {
-                    ["type"] = "http",
-                    ["url"] = endpoint.Url,
-                    ["headers"] = new JsonObject { ["Authorization"] = $"Bearer {endpoint.BearerToken}" },
-                },
-            },
-        };
-
-        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
-        if (!OperatingSystem.IsWindows())
-        {
-            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-        }
-
-        using (var stream = new FileStream(path, options))
-        using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
-        {
-            writer.Write(json.ToJsonString());
-        }
-
-        return path;
     }
 }
 
@@ -170,7 +132,7 @@ public sealed class ClaudeCodeSession : IAgentSession
         {
             ProcessId = Pid,
             ThreadId = sessionId,
-            Message = $"claude session {sessionId} {(_request.ResumeSessionId is null ? "started" : "resumed")} in {_request.WorkspacePath} with model {_request.Config.Claude.ModelFor(_request.Issue.State) ?? "default"}",
+            Message = $"claude session {sessionId} {(_request.ResumeSessionId is null ? "started" : "resumed")} in {_request.WorkspacePath} with model {_request.EffectiveRoute.Model ?? "default"}",
         });
         return Task.CompletedTask;
     }

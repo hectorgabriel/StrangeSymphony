@@ -17,7 +17,10 @@ public sealed record RunningRow(
     DateTimeOffset? LastEventAt,
     TokenCounts Tokens,
     string? WorkspacePath,
-    string? Stopping);
+    string? Stopping,
+    // The session's route (agent.runner and the model; null model is the agent's default).
+    string Runner = Agents.AgentRunners.Claude,
+    string? Model = null);
 
 public sealed record RetryRow(
     string IssueId,

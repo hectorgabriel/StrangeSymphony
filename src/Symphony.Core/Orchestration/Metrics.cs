@@ -32,7 +32,9 @@ public sealed record MetricRecord(
     string? Error = null,
     bool Resumed = false,
     bool Rework = false,
-    string? FromState = null)
+    string? FromState = null,
+    // The agent runner (agent.runner) of a run or defects record; missing on lines written before runners existed.
+    string? Runner = null)
 {
     public const string Run = "run";
     public const string Handoff = "handoff";

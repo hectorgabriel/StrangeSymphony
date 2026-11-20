@@ -33,10 +33,12 @@ public sealed record SavedIssue(
     string? LastError,
     int CleanExitsInState,
     string? CleanExitState,
-    // The Claude session to continue, with the state and model it ran in (claude.resume).
+    // The agent session to continue, with the state, model and runner it ran in (the runner's resume setting).
+    // A missing runner means claude: state files from before agent.runner existed.
     string? ResumeSessionId = null,
     string? ResumeState = null,
-    string? ResumeModel = null)
+    string? ResumeModel = null,
+    string? ResumeRunner = null)
 {
     public const string Retry = "retry";
     public const string Interrupted = "interrupted";

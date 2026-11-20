@@ -203,6 +203,8 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
             ["total_tokens"] = r.Tokens.TotalTokens,
         },
         ["stopping"] = r.Stopping,
+        ["runner"] = r.Runner,
+        ["model"] = r.Model,
     };
 
     private static JsonObject RetryJson(RetryRow r) => new()

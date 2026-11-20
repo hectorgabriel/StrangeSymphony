@@ -23,7 +23,26 @@ public sealed record AgentSettings(
     int MaxTurns,
     int MaxRetryBackoffMs,
     IReadOnlyDictionary<string, int> MaxConcurrentAgentsByState,
-    int MaxFastContinuations);
+    int MaxFastContinuations,
+    // Extension, agent.runner: the coding agent sessions run with (Agents.AgentRunners).
+    string Runner = Agents.AgentRunners.Claude);
+
+/// <summary>What the orchestrator needs from any runner's section, whichever agent it configures.</summary>
+public interface IRunnerSettings
+{
+    string Command { get; }
+
+    /// <summary>The model a session for an issue in <paramref name="state"/> runs with; null means the agent's default.</summary>
+    string? ModelFor(string? state);
+
+    int TurnTimeoutMs { get; }
+
+    /// <summary>No agent activity for this long stops the session as stalled; 0 or less turns detection off.</summary>
+    int StallTimeoutMs { get; }
+
+    /// <summary>Continue the issue's last session in the same state instead of starting a new one (the section's <c>resume</c>).</summary>
+    bool ResumeSessions { get; }
+}
 
 /// <summary>
 /// Claude Code runner settings (front matter key <c>claude</c>). This replaces the SPEC's
@@ -43,11 +62,13 @@ public sealed record ClaudeSettings(
     int ReadTimeoutMs,
     int StallTimeoutMs,
     // Extension: continue the issue's last session in the same state instead of starting a new one.
-    bool Resume = true)
+    bool Resume = true) : IRunnerSettings
 {
     /// <summary>The model a session for an issue in <paramref name="state"/> runs with; null means Claude Code's default.</summary>
     public string? ModelFor(string? state) =>
         ModelByState.TryGetValue(StateNames.Normalize(state), out var model) ? model : Model;
+
+    bool IRunnerSettings.ResumeSessions => Resume;
 }
 
 /// <summary>
@@ -120,6 +141,16 @@ public sealed record ServiceConfig(
     DefectSettings? Defects = null)
 {
     public BudgetSettings Budgets => Budget ?? BudgetSettings.None;
+
+    /// <summary>The section of the runner in <c>agent.runner</c>.</summary>
+    public IRunnerSettings RunnerSettings => Agent.Runner switch
+    {
+        Agents.AgentRunners.Claude => Claude,
+        var runner => throw new InvalidOperationException($"agent.runner '{runner}' is not supported"),
+    };
+
+    /// <summary>The runner and model a session for an issue in <paramref name="state"/> starts with.</summary>
+    public Agents.AgentRoute RouteFor(string? state) => new(Agent.Runner, RunnerSettings.ModelFor(state));
 
     /// <summary>The audit trail's file (docs/audit-trail.md).</summary>
     public string AuditFile => AuditPath ?? Audit.AuditLog.DefaultPathFor(WorkspaceRoot);

@@ -115,12 +115,19 @@ public sealed partial class ConfigBuilder(
 
         // agent
         var agent = Section(root, "agent");
+        var runner = Agents.AgentRunners.Normalize(String(agent, "agent.runner", "runner"));
+        if (!Agents.AgentRunners.All.Contains(runner))
+        {
+            throw Invalid("agent.runner", $"must be one of: {string.Join(", ", Agents.AgentRunners.All)}");
+        }
+
         var agentSettings = new AgentSettings(
             Int(agent, "agent.max_concurrent_agents", "max_concurrent_agents", 10, min: 1),
             Int(agent, "agent.max_turns", "max_turns", 20, min: 1),
             Int(agent, "agent.max_retry_backoff_ms", "max_retry_backoff_ms", 300000, min: 1),
             ByStateLimits(agent),
-            Int(agent, "agent.max_fast_continuations", "max_fast_continuations", 3, min: 0));
+            Int(agent, "agent.max_fast_continuations", "max_fast_continuations", 3, min: 0),
+            runner);
 
         // claude
         var claude = Section(root, "claude");
@@ -154,8 +161,10 @@ public sealed partial class ConfigBuilder(
         var server = Section(root, "server");
         int? port = server.ContainsKey("port") ? Int(server, "server.port", "port", 0, min: 0) : null;
 
-        var pullRequest = PullRequest(root, claudeSettings, warnings);
-        var gates = Gates(root, claudeSettings, warnings);
+        // Gates and the PR tool run inside a tool call, which the stall timer can't see; warn against the runner's timeout.
+        var stall = new StallLimit(claudeSettings.StallTimeoutMs, $"{runner}.stall_timeout_ms");
+        var pullRequest = PullRequest(root, stall, warnings);
+        var gates = Gates(root, stall, warnings);
         var defects = Defects(root);
 
         return new ServiceConfig(
@@ -274,9 +283,12 @@ public sealed partial class ConfigBuilder(
     /// <summary>Time a gate may use on top of its commands' <c>timeout_ms</c>, for the git checks.</summary>
     public const int GateOverheadMs = 120000;
 
+    /// <summary>The runner's stall timeout and the front matter field that sets it, for warnings.</summary>
+    private sealed record StallLimit(int Ms, string Field);
+
     /// <summary><c>gates</c> (extension; docs/verification-gates.md): target state name -> host-side checks.</summary>
     private static Dictionary<string, GateSettings> Gates(
-        IReadOnlyDictionary<string, object?> root, ClaudeSettings claude, List<string> warnings)
+        IReadOnlyDictionary<string, object?> root, StallLimit stall, List<string> warnings)
     {
         var result = new Dictionary<string, GateSettings>();
         if (!root.TryGetValue("gates", out var raw) || raw is null)
@@ -332,9 +344,9 @@ public sealed partial class ConfigBuilder(
                 throw Invalid(field, "checks nothing: give it 'run' commands or leave 'require_pushed' on");
             }
 
-            if (claude.StallTimeoutMs > 0 && settings.Run.Count > 0 && settings.TimeoutMs + GateOverheadMs >= claude.StallTimeoutMs)
+            if (stall.Ms > 0 && settings.Run.Count > 0 && settings.TimeoutMs + GateOverheadMs >= stall.Ms)
             {
-                warnings.Add($"{field}.timeout_ms ({settings.TimeoutMs}) plus {GateOverheadMs} ms for the git checks reaches claude.stall_timeout_ms ({claude.StallTimeoutMs}); "
+                warnings.Add($"{field}.timeout_ms ({settings.TimeoutMs}) plus {GateOverheadMs} ms for the git checks reaches {stall.Field} ({stall.Ms}); "
                     + "a long gate can get the session stopped as stalled");
             }
 
@@ -345,7 +357,7 @@ public sealed partial class ConfigBuilder(
     }
 
     /// <summary><c>pull_request</c> (extension; docs/pull-requests.md). Absent means the agent gets no PR tool.</summary>
-    private PullRequestSettings? PullRequest(IReadOnlyDictionary<string, object?> root, ClaudeSettings claude, List<string> warnings)
+    private PullRequestSettings? PullRequest(IReadOnlyDictionary<string, object?> root, StallLimit stall, List<string> warnings)
     {
         if (!root.TryGetValue("pull_request", out var raw) || raw is null)
         {
@@ -390,9 +402,9 @@ public sealed partial class ConfigBuilder(
             StringList(section, "pull_request.forbidden_paths", "forbidden_paths") ?? [.. DefaultForbiddenPaths]);
 
         // A tool call produces no agent events, so a long build can look like a stalled session.
-        if (claude.StallTimeoutMs > 0 && settings.VerifyTimeoutMs + PullRequestTool.OverheadMs >= claude.StallTimeoutMs)
+        if (stall.Ms > 0 && settings.VerifyTimeoutMs + PullRequestTool.OverheadMs >= stall.Ms)
         {
-            warnings.Add($"pull_request.verify_timeout_ms ({settings.VerifyTimeoutMs}) plus {PullRequestTool.OverheadMs} ms for the checks reaches claude.stall_timeout_ms ({claude.StallTimeoutMs}); "
+            warnings.Add($"pull_request.verify_timeout_ms ({settings.VerifyTimeoutMs}) plus {PullRequestTool.OverheadMs} ms for the checks reaches {stall.Field} ({stall.Ms}); "
                 + "a long verification can get the session stopped as stalled");
         }
 

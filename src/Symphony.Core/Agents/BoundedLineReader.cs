@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Symphony.Claude;
+namespace Symphony.Core.Agents;
 
 /// <summary>Newline-delimited reader with a per-line cap (SPEC 10.1 recommends 10 MB).</summary>
 public sealed class BoundedLineReader(TextReader reader, int maxLineChars)
