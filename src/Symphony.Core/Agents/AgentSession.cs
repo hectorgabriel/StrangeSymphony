@@ -21,6 +21,8 @@ public sealed record AgentEvent(string Event, DateTimeOffset Timestamp)
     public GateCheck? Gate { get; init; }
     /// <summary>Set on <see cref="AgentEventNames.HostToolCall"/>: a host tool the agent called, for the audit trail.</summary>
     public HostToolCall? HostTool { get; init; }
+    /// <summary>Set on <see cref="AgentEventNames.DefectsReported"/>: an agent sent the issue back, and why.</summary>
+    public Defects.DefectReport? Defects { get; init; }
 }
 
 /// <summary>
@@ -52,6 +54,7 @@ public static class AgentEventNames
     public const string Notification = "notification";
     public const string GateChecked = "gate_checked";
     public const string HostToolCall = "host_tool_call";
+    public const string DefectsReported = "defects_reported";
     public const string RateLimit = "rate_limit";
     public const string OtherMessage = "other_message";
     public const string Malformed = "malformed";

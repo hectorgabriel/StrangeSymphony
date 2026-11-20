@@ -666,6 +666,15 @@ public sealed class Orchestrator
                 Outcome: gate.Passed ? MetricRecord.GatePassed : gate.Category ?? "failed",
                 FromState: gate.FromState));
         }
+        if (ev.Defects is { } defects)
+        {
+            _metrics.Add(MetricsPath, new MetricRecord(
+                MetricRecord.Defects, m.IssueId, entry.Issue.Identifier, ev.Timestamp, defects.State,
+                Model: entry.Model, FromState: defects.FromState)
+            {
+                DefectCounts = defects.Counts,
+            });
+        }
         if (ev.HostTool is { } call)
         {
             Audit(new AuditRecord(AuditRecord.ToolCall, AuditRecord.ByAgent, m.IssueId, entry.Issue.Identifier, _time.GetUtcNow(), call.State, call.FromState,

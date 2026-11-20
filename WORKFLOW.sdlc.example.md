@@ -89,6 +89,21 @@ gates:
   Con Defectos: {}                    # test cases pushed; failing tests are why the task is here
   Documentado: {}                     # manual committed and pushed
 
+# Why work goes back (docs/rework-loops.md). The tester reports its defects by category and
+# severity with report_defects before it may move a task to Con Defectos. Only the counts are
+# kept; the defects themselves stay in the Wrike comments. The Metrics page shows the result.
+defects:
+  states: [Con Defectos]
+  categories:
+    acceptance_criteria: An acceptance criterion of the analysis isn't met
+    business_rule: A business rule or calculation is wrong
+    validation: Missing or wrong validation of user input
+    data: Wrong data saved, shown or migrated
+    ui: Layout, labels, navigation or the UI/UX checklist
+    error_handling: Unhandled error, crash or unclear error message
+    regression: Something that worked before is broken
+    performance: Too slow for normal use
+
 # Token caps (0 or absent = no limit). Counted as the Metrics page shows them, cache reads included.
 # budget:
 #   max_tokens_per_issue: 50000000
@@ -181,7 +196,9 @@ Your role is defined in `.claude/agents/tester.md`. Work on the task's feature o
 3. Report each defect as a Wrike comment with the fields of the RY-01AC01-R02 format (ID, type,
    impact, module, process, description, steps to reproduce). Do not fix production code yourself.
 4. Commit and push your tests and test cases.
-5. If you found defects, move the task to "Con Defectos". Otherwise post a summary of what was
+5. If you found defects, call `report_defects` with one entry per defect: its category and a severity
+   (`critical` blocks the process, `major` has a workaround, `minor` is cosmetic), then move the task
+   to "Con Defectos". Otherwise post a summary of what was
    verified and move it to "En Revision".
 {% elsif stage == "por documentar" %}
 ## Stage: user manual

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Writes a sample .symphony-metrics.jsonl and .symphony-audit.jsonl for the SDLC pipeline: 14 tasks over the
-last 13 days, with runs, hand-offs, rework, failed runs, closed tasks, verification gate checks, and the audit
-trail of the same events (agent moves and comments, people's moves, a pull request).
+last 13 days, with runs, hand-offs, rework, failed runs, closed tasks, verification gate checks, rework loops (the
+tester's defect reports before Con Defectos, and a reviewer's send-back without one), and the audit trail of the same
+events (agent moves and comments, people's moves, a pull request).
 
 Usage: generate.py [workspace-root]   (writes both files to <workspace-root>; default: ws/ next to this script)
 Deterministic: the same seed and date give the same file.
@@ -57,8 +58,8 @@ class Task:
             aud(self, "state_changed", "outside", state=to_state, from_state=self.state)
         self.state = to_state
 
-    def run(self, state, minutes, outcome="completed", turns=None, resumed=False, error=None):
-        model = MODELS[state]
+    def run(self, state, minutes, outcome="completed", turns=None, resumed=False, error=None, model=None):
+        model = model or MODELS[state]
         seconds = minutes * 60 * random.uniform(0.8, 1.25)
         started = self.t
         self.flush()
@@ -106,6 +107,20 @@ class Task:
             self.state = state
             self.agent_moved = True
 
+    def send_back(self, defects):
+        """The tester reports its defects (category -> severity -> count), then moves the task to Con Defectos."""
+        self.t += timedelta(minutes=2)
+        counts = {}
+        for (category, severity), n in defects.items():
+            counts.setdefault(category, {})[severity] = n
+        total = lambda key: {k: sum(n for (c, s), n in defects.items() if (c if key == "c" else s) == k)
+                             for k in dict.fromkeys(c if key == "c" else s for c, s in defects)}
+        aud(self, "tool_call", "agent", run_id=self.run_id, session_id=self.session, model=MODELS["Por Probar"], tool="report_defects",
+            args={"categories": total("c"), "severities": total("s")}, ok=True)
+        self.gate("Con Defectos", "passed", 3)
+        rec(kind="defects", issue_id=self.id, identifier=self.identifier, at=iso(self.t), state="Con Defectos",
+            model=MODELS["Por Probar"], from_state="Por Probar", defect_counts=counts)
+
     def handoff(self, to_state, wait_hours, closed=False):
         if self.last_run_state and self.last_run_state != to_state:
             self.handed_off.add(self.last_run_state)
@@ -131,8 +146,8 @@ class Task:
         self.handoff(to or gate_state, wait)
 
 
-def build(n, start, *, plan_rejections=(), impl_rejections=(), test_rejections=(), defects=False,
-          stop_after=None, failed_run=False, resumed=False):
+def build(n, start, *, plan_rejections=(), impl_rejections=(), test_rejections=(), defects=(),
+          stop_after=None, failed_run=False, resumed=False, impl_model=None, review_send_back=False):
     t = Task(n, start)
     t.stage("Por Analizar", 25, "Analizado", to="Por Desarrollar", wait=6)
     if stop_after == "analysis":
@@ -141,7 +156,7 @@ def build(n, start, *, plan_rejections=(), impl_rejections=(), test_rejections=(
     if failed_run:
         t.run("Plan Aprobado", 30, outcome="failed", error="agent turn error: turn_timeout: turn exceeded 3600000 ms")
         t.t += timedelta(minutes=5)
-    t.run("Plan Aprobado", 45, resumed=resumed or failed_run)
+    t.run("Plan Aprobado", 45, resumed=resumed or failed_run, model=impl_model)
     for category in impl_rejections:
         t.gate("Por Probar", category, 240 if category == "verification_failed" else 2)
         t.t += timedelta(minutes=random.randint(5, 25))
@@ -152,11 +167,13 @@ def build(n, start, *, plan_rejections=(), impl_rejections=(), test_rejections=(
     if stop_after == "implementation":
         return t.flush()
     t.run("Por Probar", 35)
-    if defects:
-        t.gate("Con Defectos", "passed", 3)
+    for i, found in enumerate(defects):
+        t.send_back(found)
+        if stop_after == "defects" and i == len(defects) - 1:
+            return t.handoff("Con Defectos", 0) or t.flush()  # nobody has triaged it yet
         t.handoff("Con Defectos", 5)
         t.handoff("Plan Aprobado", 0.5)
-        t.run("Plan Aprobado", 20)  # rework: the stage was handed off before
+        t.run("Plan Aprobado", 20, model=impl_model)  # rework: the stage was handed off before
         t.gate("Por Probar", "passed", 250)
         t.handoff("Por Probar", 0.02)
         t.run("Por Probar", 20)  # rework too
@@ -165,6 +182,15 @@ def build(n, start, *, plan_rejections=(), impl_rejections=(), test_rejections=(
         t.t += timedelta(minutes=random.randint(5, 20))
     t.gate("En Revision", "passed", 290)
     t.handoff("En Revision", 18)
+    if review_send_back:
+        # The reviewer sends it back from the pull request: rework without a defect report.
+        t.handoff("Plan Aprobado", 0.3)
+        t.run("Plan Aprobado", 15, model=impl_model)
+        t.gate("Por Probar", "passed", 240)
+        t.handoff("Por Probar", 0.02)
+        t.run("Por Probar", 15)
+        t.gate("En Revision", "passed", 280)
+        t.handoff("En Revision", 8)
     if stop_after == "review":
         return t.flush()
     t.handoff("Por Documentar", 0.3)
@@ -177,18 +203,20 @@ def build(n, start, *, plan_rejections=(), impl_rejections=(), test_rejections=(
 day = lambda d, h=9: (NOW - timedelta(days=d)).replace(hour=h, minute=random.randint(0, 59), second=0)
 build(1, day(13))
 build(2, day(13, 11), impl_rejections=["verification_failed"])
-build(3, day(12), plan_rejections=["uncommitted_changes"], defects=True)
+build(3, day(12), plan_rejections=["uncommitted_changes"], defects=[{("acceptance_criteria", "major"): 2, ("validation", "minor"): 1}])
 build(4, day(11), impl_rejections=["not_pushed", "verification_failed"], test_rejections=["verification_failed"])
 build(5, day(11, 14), failed_run=True)
-build(6, day(10), impl_rejections=["verification_failed", "verification_failed"], defects=True)
-build(7, day(9), test_rejections=["uncommitted_changes"])
+build(6, day(10), impl_rejections=["verification_failed", "verification_failed"], impl_model="opus",
+      defects=[{("business_rule", "critical"): 1, ("data", "major"): 1}, {("business_rule", "major"): 1}])
+build(7, day(9), test_rejections=["uncommitted_changes"], review_send_back=True)
 build(8, day(8), resumed=True)
-build(9, day(7), impl_rejections=["not_pushed"], defects=True, stop_after="review")
+build(9, day(7), impl_rejections=["not_pushed"], defects=[{("ui", "minor"): 3, ("acceptance_criteria", "critical"): 1}], stop_after="review")
 build(10, day(5), impl_rejections=["verification_failed"], stop_after="review")
 build(11, day(4), plan_rejections=["not_pushed"], stop_after="implementation", impl_rejections=["verification_failed"])
 build(12, day(3), impl_rejections=["verification_failed", "workspace_changed", "verification_failed"], stop_after="implementation")
 build(13, day(2), stop_after="analysis")
 build(14, day(1), impl_rejections=["uncommitted_changes"], stop_after="implementation")
+build(15, day(3, 8), defects=[{("regression", "critical"): 1, ("validation", "major"): 2}], stop_after="defects")
 
 records = [r for r in records if r["at"] <= iso(NOW)]
 records.sort(key=lambda r: r["at"])

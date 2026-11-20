@@ -96,6 +96,13 @@ public sealed class AgentWorkerTests : IDisposable
         var audited = Assert.IsType<Symphony.Core.Audit.AuditedTracker>(gated.Request!.Tracker);
         var tracker = Assert.IsType<Symphony.Core.Gates.GatedTracker>(audited.Inner);
         Assert.Equal(_tracker.AgentToolSpecs().Select(s => s.Name), tracker.AgentToolSpecs().Select(s => s.Name));
+
+        // Defect reports sit outside the gates, so a missing report is refused before a gate runs.
+        var reporting = new FakeFactory([]);
+        await Worker(reporting).RunAsync(issue, null, Workflow("gates:\n  Done:\n    run: dotnet test\ndefects:\n  states: [Rework]\n  categories: [ui]"), _ => { }, _ => { }, default);
+        var defects = Assert.IsType<Symphony.Core.Defects.DefectTracker>(Assert.IsType<Symphony.Core.Audit.AuditedTracker>(reporting.Request!.Tracker).Inner);
+        Assert.IsType<Symphony.Core.Gates.GatedTracker>(defects.Inner);
+        Assert.Contains(defects.AgentToolSpecs(), s => s.Name == Symphony.Core.Defects.DefectTracker.ReportTool);
     }
 
     private sealed class RecordingToolsFactory : IWorkspaceToolsFactory
@@ -317,6 +324,21 @@ public class ExampleWorkflowTests
         Assert.Empty(config.GateFor("Con Defectos")!.Run);
         Assert.Null(config.GateFor("Requiere Informacion"));
         Assert.Empty(config.Warnings);
+    }
+
+    [Fact]
+    public void Sdlc_example_workflow_has_the_tester_report_defects_before_con_defectos()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "WORKFLOW.sdlc.example.md");
+        var definition = WorkflowLoader.Load(path);
+        var config = new Symphony.Core.Config.ConfigBuilder(
+            [new Symphony.Wrike.WrikeAdapterFactory()],
+            n => n == "WRIKE_TOKEN" ? "token" : null).Build(definition, path);
+
+        Assert.True(config.Defects!.IsDefectState("Con Defectos"));
+        Assert.Contains(config.Defects.Categories, c => c.Key == "acceptance_criteria" && c.Value.Length > 0);
+        var prompt = Symphony.Core.Templating.PromptRenderer.Render(definition.PromptTemplate, TestIssues.Make("1", state: "Por Probar"), null);
+        Assert.Contains("report_defects", prompt);
     }
 
     [Fact]
