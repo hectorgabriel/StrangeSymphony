@@ -22,8 +22,9 @@ public interface IAgentToolSet : IDisposable
 public interface IWorkspaceToolsFactory
 {
     /// <param name="hostSecrets">
-    /// Environment names that hold the tracker's credentials. A tool that runs project code (a build, tests)
-    /// must remove them, and its own, from that process's environment, as the agent's process does.
+    /// Environment names (or <see cref="Util.EnvironmentFilter"/> patterns) for the tracker's credentials and the
+    /// workflow's <c>workspace.strip_env</c>. A tool that runs project code (a build, tests) must remove them, and
+    /// its own, from that process's environment, as the agent's process does.
     /// </param>
     IAgentToolSet? Create(ServiceConfig config, string workspacePath, Issue issue, IReadOnlyList<string> hostSecrets);
 }

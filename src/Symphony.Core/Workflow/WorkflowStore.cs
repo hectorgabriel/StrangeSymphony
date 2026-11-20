@@ -277,6 +277,15 @@ public sealed class WorkflowStore : IDisposable
         {
             _logger.LogWarning("action=workflow_load outcome=warning reason={Reason}", w);
         }
+
+        // Names only, never values: these reach the agent and the project's builds and tests.
+        var names = Environment.GetEnvironmentVariables().Keys.Cast<string>();
+        if (Util.EnvironmentFilter.UnstrippedDatabaseCredentials(names, snapshot.Config.StrippedEnvironment) is { Count: > 0 } exposed)
+        {
+            _logger.LogWarning(
+                "action=workflow_load outcome=warning reason=database_credentials_in_environment names={Names} note=every_workspace_process_inherits_these;add_them_to_workspace.strip_env",
+                string.Join(",", exposed));
+        }
     }
 
     /// <summary>Stops watching and drops the store's reference; outstanding leases keep their adapters.</summary>

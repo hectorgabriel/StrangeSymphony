@@ -52,7 +52,7 @@ The totals show the overall rejection rate, and each task in the task table show
 
 - **The host runs the checks.** The agent can't skip a gate, run it against another commit, or report a test run that never happened. `update_state` is the only tool either tracker adapter offers for changing a status, so every agent move goes through the gate.
 - **People aren't gated.** A status changed by hand in Wrike or Azure Boards doesn't go through the gate. Gates check agents, and your review gates stay with people.
-- **Commands run the project's code**, including tests the agent wrote, so they see neither the tracker's credentials nor the pull request token. Both are removed from the commands' environment, as they are from the agent's. Other variables from Symphony's environment are still passed. Don't start Symphony with database connection strings in its environment.
+- **Commands run the project's code**, including tests the agent wrote, so they see neither the tracker's credentials nor the pull request token. Both are removed from the commands' environment, as they are from the agent's. So are the variables in `workspace.strip_env`; anything else from Symphony's environment is passed. See [data-isolation.md](data-isolation.md) for keeping database credentials out.
 - **The gate checks what the commands check.** `dotnet test` passing proves the tests pass, not that they test the right thing. That's still the tester's and the reviewer's job.
 
 ## Timeouts

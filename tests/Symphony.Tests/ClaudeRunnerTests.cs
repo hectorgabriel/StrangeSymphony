@@ -145,6 +145,30 @@ public sealed class ClaudeRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task Launches_without_the_variables_the_workflow_strips()
+    {
+        Environment.SetEnvironmentVariable("ConnectionStrings__SymphonyTest", "Server=db;Password=should-not-leak");
+        Environment.SetEnvironmentVariable("SYMPHONY_TEST_KEPT", "kept-value");
+        try
+        {
+            var (config, ws) = Setup();
+            await using (var session = await Start(config with { StripEnv = ["connectionstrings__*"] }, ws))
+            {
+                await session.RunTurnAsync("go", TestIssues.Make("1"), default);
+            }
+
+            var env = Read("env.txt");
+            Assert.DoesNotContain("should-not-leak", env);
+            Assert.Contains("kept-value", env);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ConnectionStrings__SymphonyTest", null);
+            Environment.SetEnvironmentVariable("SYMPHONY_TEST_KEPT", null);
+        }
+    }
+
+    [Fact]
     public async Task Error_result_fails_the_turn()
     {
         var (config, ws) = Setup();

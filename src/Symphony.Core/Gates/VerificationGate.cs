@@ -131,7 +131,8 @@ public sealed class GatedTracker(
     string workspacePath,
     string shell,
     ILogger logger,
-    Action<AgentEvent>? onEvent = null) : ITrackerAdapter
+    Action<AgentEvent>? onEvent = null,
+    IReadOnlyList<string>? stripEnvironment = null) : ITrackerAdapter
 {
     /// <summary>The tool every tracker adapter uses to change an issue's state, with its <c>state</c> argument.</summary>
     public const string UpdateStateTool = "update_state";
@@ -172,7 +173,7 @@ public sealed class GatedTracker(
         logger.LogInformation("action=gate outcome=running issue_id={IssueId} issue_identifier={IssueIdentifier} state={State} commands={Commands}",
             issue.Id, issue.Identifier, gate.State, gate.Run.Count);
         onEvent?.Invoke(new AgentEvent(AgentEventNames.Notification, DateTimeOffset.UtcNow) { Message = $"gate \"{gate.State}\": running" });
-        var outcome = await VerificationGate.CheckAsync(gate, workspacePath, shell, inner.SecretEnvironmentNames(), ct);
+        var outcome = await VerificationGate.CheckAsync(gate, workspacePath, shell, [.. inner.SecretEnvironmentNames(), .. stripEnvironment ?? []], ct);
         void Report(string message) => onEvent?.Invoke(new AgentEvent(AgentEventNames.GateChecked, DateTimeOffset.UtcNow)
         {
             Message = message,

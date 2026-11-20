@@ -98,9 +98,14 @@ public sealed record ServiceConfig(
     PullRequestSettings? PullRequest = null,
     BudgetSettings? Budget = null,
     // Normalized target state name -> gate.
-    IReadOnlyDictionary<string, GateSettings>? Gates = null)
+    IReadOnlyDictionary<string, GateSettings>? Gates = null,
+    // Extension, workspace.strip_env: variable names or patterns removed from every process Symphony starts in a
+    // workspace (agent, hooks, gate commands, verify_command). See docs/data-isolation.md.
+    IReadOnlyList<string>? StripEnv = null)
 {
     public BudgetSettings Budgets => Budget ?? BudgetSettings.None;
+
+    public IReadOnlyList<string> StrippedEnvironment => StripEnv ?? [];
 
     /// <summary>The gate for moving an issue to <paramref name="state"/>, if the workflow sets one.</summary>
     public GateSettings? GateFor(string? state) =>

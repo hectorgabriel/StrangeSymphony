@@ -22,6 +22,14 @@ polling:
 workspace:
   # The workspace is kept across stages until the task reaches a terminal status.
   root: ~/symphony_sdlc_ws
+  # Removed from the agent, hooks, gate commands and verify_command (docs/data-isolation.md).
+  # Symphony warns at load about database-looking variables that are not covered.
+  strip_env:
+    - ConnectionStrings__*
+    - "*CONNECTION_STRING*"
+    - "*DATABASE_URL*"
+    - PGPASSWORD
+    - SQLCMDPASSWORD
 
 hooks:
   timeout_ms: 600000
