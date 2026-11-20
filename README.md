@@ -73,6 +73,7 @@ SYMPHONY_REAL_CLAUDE=1 dotnet test --filter RealIntegration # real claude CLI sm
 - [docs/adapters/wrike.md](docs/adapters/wrike.md): the Wrike adapter profile
 - [docs/sdlc-pipeline.md](docs/sdlc-pipeline.md): one Wrike queue through analysis, development, testing and documentation, with the role agents and BossDream gates
 - [docs/hybrid-models.md](docs/hybrid-models.md): a model per status with `claude.model_by_state`, and Claude plus a self-hosted model behind a routing proxy
+- [docs/audit-trail.md](docs/audit-trail.md): `audit`, a hash-chained record of who moved each task (agent, person, Symphony), every host tool call, gate results and the verified commit, on `/audit`
 - [docs/data-isolation.md](docs/data-isolation.md): `workspace.strip_env`, keeping database credentials out of everything the agent runs, and what else the "no database access" rule needs
 - [docs/verification-gates.md](docs/verification-gates.md): `gates`, host-side checks (pushed branch, build, tests) that must pass before an agent can move an issue to a given status
 - [docs/pull-requests.md](docs/pull-requests.md): the `create_pull_request` tool, which opens a pull request only after the host has checked the branch and built the pushed commit

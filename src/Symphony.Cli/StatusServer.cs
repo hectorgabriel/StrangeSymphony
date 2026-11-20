@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using Symphony.Core.Audit;
 using Symphony.Core.Orchestration;
 
 namespace Symphony.Cli;
@@ -55,9 +56,11 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
         _app.MapGet("/", () => Results.Content(Dashboard.Html, "text/html; charset=utf-8"));
         _app.MapGet("/score", () => Results.Content(Dashboard.ScoreHtml, "text/html; charset=utf-8"));
         _app.MapGet("/line", () => Results.Content(LinePage.Html, "text/html; charset=utf-8"));
+        _app.MapGet("/audit", () => Results.Content(AuditPage.Html, "text/html; charset=utf-8"));
         _app.MapGet("/api/v1/state", () => Snapshot(s => Json(StateJson(s))));
         // A literal segment wins over {identifier}, so an issue named "metrics" is not reachable by name.
         _app.MapGet("/api/v1/metrics", () => Json(MetricsJson(orchestrator.GetMetrics())));
+        _app.MapGet("/api/v1/audit", (string? issue, int? limit) => Json(AuditJson(ReadAudit(orchestrator.AuditFile, issue, limit))));
         _app.MapPost("/api/v1/refresh", () =>
         {
             var r = orchestrator.RequestRefresh();
@@ -102,6 +105,36 @@ public sealed class StatusServer(Orchestrator orchestrator, ILogger<StatusServer
     private static readonly JsonSerializerOptions SnakeCase = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
 
     public static JsonNode MetricsJson(MetricsReport report) => JsonSerializer.SerializeToNode(report, SnakeCase)!;
+
+    /// <summary>The last <paramref name="limit"/> lines (default 500, at most 5000), of one task when <paramref name="issue"/> is set.</summary>
+    public static AuditReadResult ReadAudit(string path, string? issue, int? limit)
+    {
+        var n = Math.Clamp(limit ?? 500, 1, 5000);
+        return string.IsNullOrWhiteSpace(issue)
+            ? AuditLog.Read(path, _ => true, n)
+            : AuditLog.Read(path, r => string.Equals(r.Identifier, issue.Trim(), StringComparison.OrdinalIgnoreCase) || r.IssueId == issue.Trim(), n);
+    }
+
+    public static JsonObject AuditJson(AuditReadResult r)
+    {
+        var entries = new JsonArray();
+        foreach (var e in r.Entries)
+        {
+            var o = JsonSerializer.SerializeToNode(e.Record, AuditLog.Json)!.AsObject();
+            o["line"] = e.Line;
+            o["intact"] = e.Intact;
+            entries.Add(o);
+        }
+
+        return new JsonObject
+        {
+            ["lines"] = r.Lines,
+            ["chain_intact"] = r.ChainIntact,
+            ["first_broken_line"] = r.FirstBrokenLine,
+            ["error"] = r.Error,
+            ["entries"] = entries,
+        };
+    }
 
     public static JsonObject StateJson(RuntimeSnapshot s) => new()
     {

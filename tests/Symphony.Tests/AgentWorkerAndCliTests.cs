@@ -82,18 +82,19 @@ public sealed class AgentWorkerTests : IDisposable
     }
 
     [Fact]
-    public async Task Sessions_get_the_gated_tracker_only_when_the_workflow_has_gates()
+    public async Task Sessions_get_the_audited_tracker_and_the_gated_one_only_when_the_workflow_has_gates()
     {
         var issue = TestIssues.Make("1", state: "Done");
         _tracker.Put(issue);
 
         var plain = new FakeFactory([]);
         await Worker(plain).RunAsync(issue, null, Workflow(), _ => { }, _ => { }, default);
-        Assert.Same(_tracker, plain.Request!.Tracker);
+        Assert.Same(_tracker, Assert.IsType<Symphony.Core.Audit.AuditedTracker>(plain.Request!.Tracker).Inner);
 
         var gated = new FakeFactory([]);
         await Worker(gated).RunAsync(issue, null, Workflow("gates:\n  Done:\n    run: dotnet test"), _ => { }, _ => { }, default);
-        var tracker = Assert.IsType<Symphony.Core.Gates.GatedTracker>(gated.Request!.Tracker);
+        var audited = Assert.IsType<Symphony.Core.Audit.AuditedTracker>(gated.Request!.Tracker);
+        var tracker = Assert.IsType<Symphony.Core.Gates.GatedTracker>(audited.Inner);
         Assert.Equal(_tracker.AgentToolSpecs().Select(s => s.Name), tracker.AgentToolSpecs().Select(s => s.Name));
     }
 
@@ -329,6 +330,19 @@ public class ExampleWorkflowTests
         string[] names = ["ConnectionStrings__Ventas", "VENTAS_CONNECTION_STRING", "DATABASE_URL", "REPORTS_DATABASE_URL", "PGPASSWORD", "SQLCMDPASSWORD"];
         Assert.All(names, n => Assert.True(Symphony.Core.Util.EnvironmentFilter.MatchesAny(n, config.StrippedEnvironment), n));
         Assert.False(Symphony.Core.Util.EnvironmentFilter.MatchesAny("WRIKE_TOKEN", config.StrippedEnvironment));
+    }
+
+    [Fact]
+    public void Sdlc_example_workflow_keeps_the_audit_trail_outside_the_workspace_root()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "WORKFLOW.sdlc.example.md");
+        var config = new Symphony.Core.Config.ConfigBuilder(
+            [new Symphony.Wrike.WrikeAdapterFactory()],
+            n => n == "WRIKE_TOKEN" ? "token" : null).Build(WorkflowLoader.Load(path), path);
+
+        var root = Path.GetFullPath(config.WorkspaceRoot) + Path.DirectorySeparatorChar;
+        Assert.False(config.AuditFile.StartsWith(root, StringComparison.Ordinal), config.AuditFile);
+        Assert.True(Path.IsPathFullyQualified(config.AuditFile));
     }
 
     [Fact]

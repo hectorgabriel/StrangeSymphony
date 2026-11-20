@@ -19,7 +19,17 @@ public sealed record AgentEvent(string Event, DateTimeOffset Timestamp)
     public JsonNode? RateLimits { get; init; }
     /// <summary>Set on <see cref="AgentEventNames.GateChecked"/>: what a verification gate decided.</summary>
     public GateCheck? Gate { get; init; }
+    /// <summary>Set on <see cref="AgentEventNames.HostToolCall"/>: a host tool the agent called, for the audit trail.</summary>
+    public HostToolCall? HostTool { get; init; }
 }
+
+/// <summary>
+/// One call to a host-side tool (tracker or workspace tool) from an agent session. <see cref="Args"/> is already
+/// summarized (<see cref="Audit.AuditLog.SummarizeArgs"/>). <see cref="State"/> is the target of <c>update_state</c>.
+/// </summary>
+public sealed record HostToolCall(
+    string Tool, System.Text.Json.Nodes.JsonObject Args, bool Ok, string? Category, string? State, string? FromState,
+    string? Commit, string? Branch, string? Url);
 
 /// <summary>
 /// One verification gate run (docs/verification-gates.md): the agent asked to move the issue from
@@ -41,6 +51,7 @@ public static class AgentEventNames
     public const string UnsupportedToolCall = "unsupported_tool_call";
     public const string Notification = "notification";
     public const string GateChecked = "gate_checked";
+    public const string HostToolCall = "host_tool_call";
     public const string RateLimit = "rate_limit";
     public const string OtherMessage = "other_message";
     public const string Malformed = "malformed";

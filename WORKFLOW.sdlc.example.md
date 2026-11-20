@@ -31,6 +31,11 @@ workspace:
     - PGPASSWORD
     - SQLCMDPASSWORD
 
+# Who moved each task, and what the agents did (docs/audit-trail.md). Keep it outside workspace.root,
+# and ship it to storage the agents can't write.
+audit:
+  path: ~/symphony_sdlc_audit/audit.jsonl
+
 hooks:
   timeout_ms: 600000
   after_create: |
