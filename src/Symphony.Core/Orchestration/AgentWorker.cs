@@ -111,6 +111,9 @@ public sealed class AgentWorker(
             sessionTracker = new GatedTracker(sessionTracker, gates, workspace.Path, config.Hooks.Shell, logger, onEvent, config.StrippedEnvironment);
         }
 
+        // Outermost, so the audit trail sees what the agent got back, including a gate's refusal.
+        sessionTracker = new Audit.AuditedTracker(sessionTracker, onEvent);
+
         async Task<IAgentSession> StartAsync(string? resumeId)
         {
             try

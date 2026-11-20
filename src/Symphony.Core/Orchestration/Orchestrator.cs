@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Symphony.Core.Agents;
+using Symphony.Core.Audit;
 using Symphony.Core.Config;
 using Symphony.Core.Domain;
 using Symphony.Core.Tracker;
@@ -47,6 +48,8 @@ public sealed class Orchestrator
         /// <summary>Released issues whose handoff row is still open; refreshed in the same id fetch as the runs.</summary>
         public required HashSet<string> HandoffIds { get; init; }
         public required bool DispatchBlocked { get; init; }
+        /// <summary>When the reads started: anything they show is at least this old (audit trail, see ObserveStates).</summary>
+        public required DateTimeOffset StartedAt { get; init; }
         public IReadOnlyList<Issue>? Refreshed { get; set; }
         public Exception? RefreshError { get; set; }
         public IReadOnlyList<Issue>? Candidates { get; set; }
@@ -173,6 +176,8 @@ public sealed class Orchestrator
 
     private readonly OrchestratorStateFile _stateFile;
     private readonly MetricsLog _metrics;
+    private readonly AuditLog _audit;
+    private string? _auditPath;
 
     // Tokens used on the host-local day, for budget.max_tokens_per_day.
     private DateOnly _usageDay;
@@ -192,6 +197,7 @@ public sealed class Orchestrator
         _logger = logger;
         _stateFile = new OrchestratorStateFile(logger);
         _metrics = new MetricsLog(logger);
+        _audit = new AuditLog(logger);
         _store.Reloaded += _ => RequestRefresh();
     }
 
@@ -203,6 +209,7 @@ public sealed class Orchestrator
         await StartupTerminalCleanupAsync(stoppingToken);
         RestoreState();
         _metrics.Load(MetricsPath);
+        LoadAudit(_store.Current.Config.AuditFile);
         _tickTimer = _time.CreateTimer(_ => RequestRefresh(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         RequestRefresh();
         Publish();
@@ -327,6 +334,7 @@ public sealed class Orchestrator
                 Runs = _running.Values.Where(e => e.Stop is null).ToDictionary(e => e.Issue.Id, e => e.RunId),
                 HandoffIds = _handoffs.Where(h => !h.Closed && !_claimed.Contains(h.IssueId)).Select(h => h.IssueId).ToHashSet(),
                 DispatchBlocked = error is not null,
+                StartedAt = _time.GetUtcNow(),
             };
             StartFetch(() => FetchForTickAsync(fetch, ct));
             _tickInFlight = true;
@@ -382,6 +390,7 @@ public sealed class Orchestrator
 
         try
         {
+            ObserveStates(fetch);
             ApplyReconcile(fetch, config);
             RefreshHandoffs(fetch, config);
             ReleaseBudgetWaits(config);
@@ -551,6 +560,7 @@ public sealed class Orchestrator
         var track = Track(issue);
         var model = workflow.Config.Claude.ModelFor(issue.State);
         var resume = ResumeFor(track, issue, workflow.Config, model);
+        ObserveState(issue, _time.GetUtcNow());
         var entry = new RunningEntry
         {
             RunId = Guid.NewGuid(),
@@ -575,6 +585,8 @@ public sealed class Orchestrator
 
         _logger.LogInformation("action=dispatch outcome=started issue_id={IssueId} issue_identifier={IssueIdentifier} state={State} attempt={Attempt} resume_session={Resume}",
             issue.Id, issue.Identifier, issue.State, attempt, resume);
+        Audit(new AuditRecord(AuditRecord.Dispatched, AuditRecord.BySymphony, issue.Id, issue.Identifier, entry.StartedAt, issue.State,
+            RunId: entry.RunId.ToString(), SessionId: resume, Model: model, Attempt: attempt, Resumed: resume is not null));
 
         var id = issue.Id;
         var runId = entry.RunId;
@@ -654,6 +666,13 @@ public sealed class Orchestrator
                 Outcome: gate.Passed ? MetricRecord.GatePassed : gate.Category ?? "failed",
                 FromState: gate.FromState));
         }
+        if (ev.HostTool is { } call)
+        {
+            Audit(new AuditRecord(AuditRecord.ToolCall, AuditRecord.ByAgent, m.IssueId, entry.Issue.Identifier, _time.GetUtcNow(), call.State, call.FromState,
+                RunId: entry.RunId.ToString(), SessionId: entry.ThreadId, Model: entry.Model, Tool: call.Tool, Args: call.Args, Ok: call.Ok,
+                Category: call.Category, Commit: call.Commit, Branch: call.Branch, Url: call.Url));
+        }
+
         if (ev.ThreadId is not null && _tracks.TryGetValue(m.IssueId, out var resumable))
         {
             resumable.ResumeSessionId = ev.ThreadId;
@@ -1091,7 +1110,55 @@ public sealed class Orchestrator
             error is null ? null : Truncate(error, 300),
             e.Resumed,
             _metrics.IsRework(e.Issue.Id, e.DispatchState)));
+        Audit(new AuditRecord(AuditRecord.RunEnded, AuditRecord.BySymphony, e.Issue.Id, e.Issue.Identifier, now, e.Issue.State,
+            RunId: e.RunId.ToString(), SessionId: e.ThreadId, Model: e.Model, Attempt: e.RetryAttempt, Resumed: e.Resumed,
+            Outcome: outcome, Error: error is null ? null : Truncate(error, 300), Turns: e.TurnCount, TotalTokens: e.TotalTokens,
+            Seconds: Math.Round(Math.Max(0, (now - e.StartedAt).TotalSeconds), 1)));
     }
+
+    // ---- Audit trail (extension, docs/audit-trail.md) ----------------------------------------
+
+    /// <summary>A read later than this after Symphony's own move that still shows the old state is a move back.</summary>
+    private static readonly TimeSpan StaleReadGrace = TimeSpan.FromSeconds(60);
+
+    private void LoadAudit(string path)
+    {
+        _audit.Load(path);
+        _auditPath = path;
+    }
+
+    private void Audit(AuditRecord record)
+    {
+        // audit.path changed on reload: the new file has its own chain.
+        var path = _store.Current.Config.AuditFile;
+        if (path != _auditPath)
+        {
+            LoadAudit(path);
+        }
+
+        _audit.Append(path, record);
+    }
+
+    /// <summary>Records the moves Symphony did not make, from what this tick's reads show.</summary>
+    private void ObserveStates(TickFetch fetch)
+    {
+        foreach (var issue in (fetch.RefreshError is null ? fetch.Refreshed ?? [] : []).Concat(fetch.Candidates ?? []))
+        {
+            ObserveState(issue, fetch.StartedAt);
+        }
+    }
+
+    private void ObserveState(Issue issue, DateTimeOffset fetchedAt)
+    {
+        if (_audit.Observe(issue, fetchedAt, StaleReadGrace) is { } change)
+        {
+            _logger.LogInformation("action=audit outcome=outside_change issue_id={IssueId} issue_identifier={IssueIdentifier} from={From} to={To}",
+                issue.Id, issue.Identifier, change.FromState, change.State);
+            Audit(change with { At = _time.GetUtcNow() });
+        }
+    }
+
+    public string AuditFile => _store.Current.Config.AuditFile;
 
     /// <summary>Tracker rate-limit hint (adapter extension, SPEC 11.4); 0 when absent.</summary>
     private static int RetryAfterMs(Exception ex) =>
@@ -1122,6 +1189,7 @@ public sealed class Orchestrator
         var now = _time.GetUtcNow();
         var closed = issue is not null && config.IsTerminalState(issue.State);
         _metrics.Add(MetricsPath, new MetricRecord(closed ? MetricRecord.Closed : MetricRecord.Handoff, issueId, identifier, now, issue?.State));
+        Audit(new AuditRecord(closed ? AuditRecord.Closed : AuditRecord.Released, AuditRecord.BySymphony, issueId, identifier, now, issue?.State, Reason: reason));
         _handoffs.RemoveAll(h => h.IssueId == issueId);
         _handoffs.Insert(0, new HandoffRow(issueId, identifier, issue?.Url ?? url, issue?.Title, issue?.State, now, reason, issue?.State, closed, now));
         if (_handoffs.Count > HandoffLimit)
@@ -1171,6 +1239,8 @@ public sealed class Orchestrator
             {
                 _logger.LogInformation("action=handoff outcome=closed issue_id={IssueId} issue_identifier={IssueIdentifier} state={State} note=removing_workspace", issue.Id, issue.Identifier, issue.State);
                 _metrics.Add(MetricsPath, new MetricRecord(MetricRecord.Closed, issue.Id, issue.Identifier, now, issue.State));
+                Audit(new AuditRecord(AuditRecord.Closed, AuditRecord.BySymphony, issue.Id, issue.Identifier, now, issue.State,
+                    Reason: $"Reached terminal state \"{issue.State}\""));
                 StartCleanup(issue.Identifier);
             }
         }

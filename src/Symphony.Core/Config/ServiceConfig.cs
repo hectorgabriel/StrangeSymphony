@@ -101,9 +101,14 @@ public sealed record ServiceConfig(
     IReadOnlyDictionary<string, GateSettings>? Gates = null,
     // Extension, workspace.strip_env: variable names or patterns removed from every process Symphony starts in a
     // workspace (agent, hooks, gate commands, verify_command). See docs/data-isolation.md.
-    IReadOnlyList<string>? StripEnv = null)
+    IReadOnlyList<string>? StripEnv = null,
+    // Extension, audit.path: where the audit trail goes; null means <workspace.root>/.symphony-audit.jsonl.
+    string? AuditPath = null)
 {
     public BudgetSettings Budgets => Budget ?? BudgetSettings.None;
+
+    /// <summary>The audit trail's file (docs/audit-trail.md).</summary>
+    public string AuditFile => AuditPath ?? Audit.AuditLog.DefaultPathFor(WorkspaceRoot);
 
     public IReadOnlyList<string> StrippedEnvironment => StripEnv ?? [];
 

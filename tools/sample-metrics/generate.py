@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Writes a sample .symphony-metrics.jsonl for the SDLC pipeline: 14 tasks over the last 13 days,
-with runs, hand-offs, rework, failed runs, closed tasks and verification gate checks.
+"""Writes a sample .symphony-metrics.jsonl and .symphony-audit.jsonl for the SDLC pipeline: 14 tasks over the
+last 13 days, with runs, hand-offs, rework, failed runs, closed tasks, verification gate checks, and the audit
+trail of the same events (agent moves and comments, people's moves, a pull request).
 
-Usage: generate.py [workspace-root]   (writes <workspace-root>/.symphony-metrics.jsonl; default: ws/ next to this script)
+Usage: generate.py [workspace-root]   (writes both files to <workspace-root>; default: ws/ next to this script)
 Deterministic: the same seed and date give the same file.
 """
+import hashlib
 import json
 import os
 import random
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 
 random.seed(7)
@@ -16,6 +19,7 @@ NOW = datetime.now(timezone.utc).replace(microsecond=0)
 MODELS = {"Por Analizar": "opus", "Por Desarrollar": "opus", "Plan Aprobado": "sonnet",
           "Por Probar": "sonnet", "Por Documentar": "qwen3.8-27b-deep"}
 records = []
+audit = []
 
 
 def iso(t):
@@ -26,6 +30,15 @@ def rec(**kw):
     records.append({k: v for k, v in kw.items() if v not in (None, False, 0)})
 
 
+def aud(task, kind, actor, **kw):
+    audit.append({"kind": kind, "actor": actor, "issue_id": task.id, "identifier": task.identifier, "at": iso(task.t),
+                  **{k: v for k, v in kw.items() if v not in (None, False, 0)}})
+
+
+def fingerprint(text):
+    return {"chars": len(text), "sha256": hashlib.sha256(text.encode()).hexdigest()[:16]}
+
+
 class Task:
     def __init__(self, n, start):
         self.id = f"IEAB{n:04d}"
@@ -33,11 +46,28 @@ class Task:
         self.t = start
         self.handed_off = set()
         self.last_run_state = None
+        self.state = None  # what the tracker shows, for the audit trail
+        self.run_id = None
+        self.session = None
+        self.branch = f"feature/{self.identifier.lower()}"
+
+    def move_outside(self, to_state):
+        """A person moved the task in the tracker."""
+        if self.state and self.state != to_state:
+            aud(self, "state_changed", "outside", state=to_state, from_state=self.state)
+        self.state = to_state
 
     def run(self, state, minutes, outcome="completed", turns=None, resumed=False, error=None):
         model = MODELS[state]
         seconds = minutes * 60 * random.uniform(0.8, 1.25)
         started = self.t
+        self.flush()
+        self.move_outside(state)
+        self.run_id = str(uuid.UUID(int=random.getrandbits(128)))
+        if not resumed or self.session is None:
+            self.session = str(uuid.UUID(int=random.getrandbits(128)))
+        aud(self, "dispatched", "symphony", state=state, run_id=self.run_id, session_id=self.session if resumed else None,
+            model=model, attempt=1 if outcome != "completed" else None, resumed=resumed)
         self.t += timedelta(seconds=seconds)
         scale = {"opus": 1.3, "sonnet": 1.0, "qwen3.8-27b-deep": 0.6}[model]
         inp = int(random.uniform(1.5e6, 6e6) * minutes / 20 * scale)
@@ -47,17 +77,48 @@ class Task:
             input_tokens=inp, output_tokens=out, total_tokens=inp + out, attempt=None if outcome == "completed" else 1,
             outcome=outcome, error=error, resumed=resumed, rework=state in self.handed_off)
         self.last_run_state = state
+        # The session ends after its last tool call (the gate below), so the audit line waits for flush().
+        self.pending = dict(state=state, run_id=self.run_id, session_id=self.session, model=model, resumed=resumed, outcome=outcome,
+                            error=error, turns=records[-1]["turns"], total_tokens=inp + out, seconds=round(seconds, 1))
+
+    def flush(self):
+        if getattr(self, "pending", None):
+            self.t += timedelta(seconds=5)
+            aud(self, "run_ended", "symphony", **self.pending)
+            self.pending = None
 
     def gate(self, state, outcome, seconds):
         self.t += timedelta(seconds=seconds)
         rec(kind="gate", issue_id=self.id, identifier=self.identifier, at=iso(self.t), state=state,
             seconds=seconds, outcome=outcome, from_state=self.last_run_state)
+        ok = outcome == "passed"
+        common = dict(run_id=self.run_id, session_id=self.session, model=MODELS.get(self.last_run_state), tool="update_state")
+        if ok and state == "Por Probar":
+            title = f"{self.identifier}: cambios del plan aprobado"
+            aud(self, "tool_call", "agent", **common | {"tool": "create_pull_request"}, args={"title": fingerprint(title)}, ok=True,
+                url=f"https://dev.azure.com/acme/sdlc/_git/app/pullrequest/{int(self.id[4:]) + 100}")
+        aud(self, "tool_call", "agent", state=state, from_state=self.state, **common, args={"state": state}, ok=ok,
+            category=None if ok else outcome, commit=hashlib.sha1(f"{self.id}{self.t}".encode()).hexdigest() if ok else None,
+            branch=self.branch if ok else None)
+        if ok:
+            note = f"Listo para {state}: resumen del trabajo en {self.identifier}."
+            aud(self, "tool_call", "agent", **common | {"tool": "add_comment"}, args={"body": fingerprint(note)}, ok=True)
+            self.state = state
+            self.agent_moved = True
 
     def handoff(self, to_state, wait_hours, closed=False):
         if self.last_run_state and self.last_run_state != to_state:
             self.handed_off.add(self.last_run_state)
+        self.flush()
         self.t += timedelta(minutes=random.randint(1, 4))
         rec(kind="closed" if closed else "handoff", issue_id=self.id, identifier=self.identifier, at=iso(self.t), state=to_state)
+        if getattr(self, "agent_moved", False):
+            # Symphony lets the task go once the agent's own move takes it out of the active statuses.
+            aud(self, "released", "symphony", state=self.state, reason=f'Moved to "{self.state}"')
+            self.agent_moved = False
+        self.move_outside(to_state)
+        if closed:
+            aud(self, "closed", "symphony", state=to_state, reason=f'Reached terminal state "{to_state}"')
         self.t += timedelta(hours=wait_hours * random.uniform(0.6, 1.4))
 
     def stage(self, state, minutes, gate_state, rejections=(), gate_seconds=20, to=None, wait=3.0):
@@ -75,7 +136,7 @@ def build(n, start, *, plan_rejections=(), impl_rejections=(), test_rejections=(
     t = Task(n, start)
     t.stage("Por Analizar", 25, "Analizado", to="Por Desarrollar", wait=6)
     if stop_after == "analysis":
-        return
+        return t.flush()
     t.stage("Por Desarrollar", 15, "Plan Propuesto", rejections=plan_rejections, to="Plan Aprobado", wait=4)
     if failed_run:
         t.run("Plan Aprobado", 30, outcome="failed", error="agent turn error: turn_timeout: turn exceeded 3600000 ms")
@@ -85,11 +146,11 @@ def build(n, start, *, plan_rejections=(), impl_rejections=(), test_rejections=(
         t.gate("Por Probar", category, 240 if category == "verification_failed" else 2)
         t.t += timedelta(minutes=random.randint(5, 25))
     if stop_after == "implementation" and impl_rejections and impl_rejections[-1] != "passed":
-        return  # still stuck at the gate
+        return t.flush()  # still stuck at the gate
     t.gate("Por Probar", "passed", 260)
     t.handoff("Por Probar", 0.02)
     if stop_after == "implementation":
-        return
+        return t.flush()
     t.run("Por Probar", 35)
     if defects:
         t.gate("Con Defectos", "passed", 3)
@@ -105,11 +166,12 @@ def build(n, start, *, plan_rejections=(), impl_rejections=(), test_rejections=(
     t.gate("En Revision", "passed", 290)
     t.handoff("En Revision", 18)
     if stop_after == "review":
-        return
+        return t.flush()
     t.handoff("Por Documentar", 0.3)
     t.stage("Por Documentar", 20, "Documentado", to="Documentado", wait=10)
     if t.t < NOW:
         t.handoff("Completado", 0, closed=True)
+    t.flush()
 
 
 day = lambda d, h=9: (NOW - timedelta(days=d)).replace(hour=h, minute=random.randint(0, 59), second=0)
@@ -136,6 +198,18 @@ path = os.path.join(root, ".symphony-metrics.jsonl")
 with open(path, "w") as f:
     for r in records:
         f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+# The audit trail: the same chain Symphony writes. Each line has seq and prev (the hash of the line before), and ends
+# with hash, the SHA-256 of the line without it.
+audit = sorted((a for a in audit if a["at"] <= iso(NOW)), key=lambda a: a["at"])
+prev = "0" * 64
+audit_path = os.path.join(root, ".symphony-audit.jsonl")
+with open(audit_path, "w") as f:
+    for seq, a in enumerate(audit, 1):
+        body = json.dumps(a | {"seq": seq, "prev": prev}, ensure_ascii=False, separators=(",", ":"))
+        prev = hashlib.sha256(body.encode()).hexdigest()
+        f.write(body[:-1] + ',"hash":"' + prev + '"}\n')
+print(f"{audit_path}: {len(audit)} lines")
 kinds = {}
 for r in records:
     kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1

@@ -3,14 +3,8 @@ namespace Symphony.Cli;
 /// <summary>The metrics view at <c>/line</c>: run history from <c>/api/v1/metrics</c>, as numbers and tables.</summary>
 internal static class LinePage
 {
-    public const string Html = """
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Symphony · Line</title>
-<style>
+    /// <summary>Shared with the audit page.</summary>
+    public const string Style = """
   :root { --bg: #f7f8f9; --panel: #fff; --fg: #172b4d; --muted: #626f86; --line: #091e4224; --accent: #0c66e4; --bar: #cce0ff; --warn: #ae2e24; --warn-bg: #ffeceb; color-scheme: light; }
   @media (prefers-color-scheme: dark) { :root { --bg: #161a1d; --panel: #22272b; --fg: #b6c2cf; --muted: #8c9bab; --line: #a6c5e229; --accent: #579dff; --bar: #09326c; --warn: #fd9891; --warn-bg: #42221f; color-scheme: dark; } }
   * { box-sizing: border-box }
@@ -40,6 +34,17 @@ internal static class LinePage
   .banner { display: none; padding: 10px 14px; border-radius: 8px; background: var(--warn-bg); color: var(--warn) }
   .banner.show { display: block }
   .empty { color: var(--muted); padding: 8px 0 }
+""";
+
+    public const string Html = """
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Symphony · Line</title>
+<style>
+""" + Style + """
 </style>
 </head>
 <body>
@@ -48,6 +53,7 @@ internal static class LinePage
   <span class="muted" id="since"></span>
   <div class="grow"></div>
   <a href="/">Board</a>
+  <a href="/audit">Audit</a>
   <a href="/api/v1/metrics">JSON</a>
 </header>
 <main>

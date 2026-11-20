@@ -92,6 +92,11 @@ public sealed partial class ConfigBuilder(
             : ResolvePath(rootRaw, workflowDir, "workspace.root");
         var stripEnv = StripEnv(workspace);
 
+        // audit (extension; docs/audit-trail.md)
+        var audit = Section(root, "audit");
+        var auditRaw = NullIfBlank(String(audit, "audit.path", "path"));
+        var auditPath = auditRaw is null ? null : ResolvePath(auditRaw, workflowDir, "audit.path");
+
         // hooks
         var hooks = Section(root, "hooks");
         var shell = NullIfBlank(String(hooks, "hooks.shell", "shell")) ?? ShellRunner.Auto;
@@ -165,7 +170,8 @@ public sealed partial class ConfigBuilder(
             pullRequest,
             budgetSettings,
             gates,
-            stripEnv);
+            stripEnv,
+            auditPath);
     }
 
     /// <summary><c>workspace.strip_env</c> (extension; docs/data-isolation.md): names or <c>*</c> patterns.</summary>
