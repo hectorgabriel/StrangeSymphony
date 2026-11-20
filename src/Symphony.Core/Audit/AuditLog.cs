@@ -41,7 +41,9 @@ public sealed record AuditRecord(
     string? Reason = null,
     int Turns = 0,
     long TotalTokens = 0,
-    double Seconds = 0)
+    double Seconds = 0,
+    // The agent runner (agent.runner) of the run; missing on lines written before runners existed.
+    string? Runner = null)
 {
     public const string Dispatched = "dispatched";
     public const string ToolCall = "tool_call";

@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Symphony.AzureDevOps;
 using Symphony.Claude;
 using Symphony.Cli;
+using Symphony.Core.Agents;
 using Symphony.Core.Config;
 using Symphony.Core.Orchestration;
 using Symphony.Core.PullRequests;
@@ -107,7 +108,11 @@ namespace Symphony.Cli
                 await gateway.StartAsync(loggerFactory, stop.Token);
 
                 var workspaces = new WorkspaceManager(loggerFactory.CreateLogger<WorkspaceManager>());
-                var agents = new ClaudeCodeSessionFactory(gateway, stateDir, loggerFactory);
+                // One factory per agent.runner; each session starts with its route's runner.
+                var agents = new AgentSessionRouter(new Dictionary<string, IAgentSessionFactory>
+                {
+                    [AgentRunners.Claude] = new ClaudeCodeSessionFactory(gateway, stateDir, loggerFactory),
+                });
                 var pullRequests = new PullRequestToolFactory(pullRequestProviders, env, loggerFactory);
                 var worker = new AgentWorker(workspaces, agents, loggerFactory.CreateLogger<AgentWorker>(), pullRequests);
                 var orchestrator = new Orchestrator(store, workspaces, worker.RunAsync, TimeProvider.System, loggerFactory.CreateLogger<Orchestrator>());

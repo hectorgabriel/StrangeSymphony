@@ -51,6 +51,8 @@ hooks:
     git fetch origin && git status --short
 
 agent:
+  # The coding agent: claude (the section below). Default claude.
+  runner: claude
   # Keep this low on a Pro plan; each session draws from your own usage limits.
   max_concurrent_agents: 2
   max_turns: 20

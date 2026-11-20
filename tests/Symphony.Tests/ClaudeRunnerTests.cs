@@ -310,7 +310,7 @@ public sealed class ClaudeCommandLineTests : IDisposable
     }
 
     private string? Find(string command) =>
-        ClaudeCommandLine.FindWindowsExecutable(command, n => n == "PATH" ? _dir : null);
+        AgentProcess.FindWindowsExecutable(command, n => n == "PATH" ? _dir : null);
 
     [Fact]
     public void A_bare_name_resolves_to_its_exe_on_path()
@@ -344,7 +344,7 @@ public sealed class ClaudeCommandLineTests : IDisposable
         }
 
         var cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
-        var psi = ClaudeCommandLine.StartInfo(cmd, ["--name", "WI-1: \"quoted\" title", ""], _dir);
+        var psi = AgentProcess.StartInfo(cmd, ["--name", "WI-1: \"quoted\" title", ""], _dir, "claude.command");
         Assert.Equal(cmd, psi.FileName);
         Assert.Equal(["--name", "WI-1: \"quoted\" title", ""], psi.ArgumentList);
     }

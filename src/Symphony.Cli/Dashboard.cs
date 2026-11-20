@@ -169,6 +169,7 @@ const dur = s => { s = Math.round(s || 0); const h = Math.floor(s / 3600), m = M
 const since = iso => dur((Date.now() - new Date(iso)) / 1000);
 const until = iso => { const s = (new Date(iso) - Date.now()) / 1000; return s <= 0 ? 'now' : 'in ' + dur(s); };
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function runnerName(r) { return ({ claude: 'Claude Code' })[r] ?? (r || 'Agent'); }
 const ICON = {
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   bolt: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
@@ -202,7 +203,7 @@ function card(item) {
   c.append(labels);
   c.append(el('div', 'ident', item.issue_identifier), el('p', 'title', item.title ?? '(no title)'));
   const b = el('div', 'badges'); item.badges.forEach(x => b.append(x));
-  if (item.agent) { const m = el('span', 'member', 'AI'); m.title = 'Claude Code is working on this'; b.append(m); }
+  if (item.agent) { const m = el('span', 'member', 'AI'); m.title = `${runnerName(item.runner)} is working on this`; b.append(m); }
   c.append(b);
   const open = () => openCard(item);
   c.onclick = e => { if (!e.target.closest('a')) open(); };
@@ -285,7 +286,7 @@ async function openCard(item) {
   const evs = (detail?.recent_events ?? []).slice().reverse();
   act.replaceChildren(...(evs.length ? evs.map(e => {
     const row = el('div', 'act'), body = el('div');
-    body.append(Object.assign(el('b'), { textContent: 'Claude ' }), Object.assign(el('code'), { textContent: e.event }));
+    body.append(Object.assign(el('b'), { textContent: runnerName(detail?.running?.runner) + ' ' }), Object.assign(el('code'), { textContent: e.event }));
     if (e.message) body.append(' ' + e.message);
     body.append(el('small', null, new Date(e.at).toLocaleString()));
     row.append(el('span', 'member', 'AI'), body); return row;

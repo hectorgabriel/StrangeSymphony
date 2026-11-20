@@ -120,11 +120,14 @@ public sealed class AgentWorker(
         // Outermost, so the audit trail sees what the agent got back, including a gate's refusal.
         sessionTracker = new Audit.AuditedTracker(sessionTracker, onEvent);
 
+        // Same route as the orchestrator's dispatch: both read it from this workflow for the dispatch state.
+        var route = config.RouteFor(issue.State);
+
         async Task<IAgentSession> StartAsync(string? resumeId)
         {
             try
             {
-                return await agents.StartAsync(new AgentSessionRequest(issue, workspace.Path, config, sessionTracker, resumeId), onEvent, ct);
+                return await agents.StartAsync(new AgentSessionRequest(issue, workspace.Path, config, sessionTracker, resumeId, route), onEvent, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -136,7 +139,6 @@ public sealed class AgentWorker(
         try
         {
             var maxTurns = config.Agent.MaxTurns;
-            var sessionModel = config.Claude.ModelFor(issue.State);
             for (var turn = 1; ; turn++)
             {
                 string prompt;
@@ -199,9 +201,9 @@ public sealed class AgentWorker(
                     return;
                 }
 
-                // A session keeps its model, so a move to a state routed elsewhere ends it; the
-                // continuation dispatch then starts a fresh session with that state's model and prompt.
-                if (!string.Equals(config.Claude.ModelFor(issue.State), sessionModel, StringComparison.Ordinal))
+                // A session keeps its runner and model, so a move to a state routed elsewhere ends it; the
+                // continuation dispatch then starts a fresh session with that state's route and prompt.
+                if (config.RouteFor(issue.State) != route)
                 {
                     logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=model_changed state={State}", issue.Id, issue.Identifier, issue.State);
                     return;

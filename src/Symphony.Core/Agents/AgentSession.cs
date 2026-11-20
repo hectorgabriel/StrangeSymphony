@@ -86,7 +86,12 @@ public sealed record AgentSessionRequest(
     ServiceConfig Config,
     ITrackerAdapter Tracker,
     // The earlier session of this issue to continue, when there is one; null starts a new session.
-    string? ResumeSessionId = null);
+    string? ResumeSessionId = null,
+    // The runner and model to start; null means the workflow's route for the issue's state.
+    AgentRoute? Route = null)
+{
+    public AgentRoute EffectiveRoute => Route ?? Config.RouteFor(Issue.State);
+}
 
 public interface IAgentSession : IAsyncDisposable
 {
