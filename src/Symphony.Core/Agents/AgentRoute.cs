@@ -4,8 +4,9 @@ namespace Symphony.Core.Agents;
 public static class AgentRunners
 {
     public const string Claude = "claude";
+    public const string Copilot = "copilot";
 
-    public static readonly IReadOnlyList<string> All = [Claude];
+    public static readonly IReadOnlyList<string> All = [Claude, Copilot];
 
     /// <summary>A saved or configured runner name; missing means <see cref="Claude"/>, which ran every session before runners existed.</summary>
     public static string Normalize(string? runner) =>

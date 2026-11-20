@@ -3,6 +3,7 @@
     <Project Path="src/Symphony.AzureDevOps/Symphony.AzureDevOps.csproj" />
     <Project Path="src/Symphony.Claude/Symphony.Claude.csproj" />
     <Project Path="src/Symphony.Cli/Symphony.Cli.csproj" />
+    <Project Path="src/Symphony.Copilot/Symphony.Copilot.csproj" />
     <Project Path="src/Symphony.Core/Symphony.Core.csproj" />
     <Project Path="src/Symphony.Wrike/Symphony.Wrike.csproj" />
   </Folder>

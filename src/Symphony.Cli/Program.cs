@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 using Symphony.AzureDevOps;
 using Symphony.Claude;
+using Symphony.Copilot;
 using Symphony.Cli;
 using Symphony.Core.Agents;
 using Symphony.Core.Config;
@@ -112,6 +113,7 @@ namespace Symphony.Cli
                 var agents = new AgentSessionRouter(new Dictionary<string, IAgentSessionFactory>
                 {
                     [AgentRunners.Claude] = new ClaudeCodeSessionFactory(gateway, stateDir, loggerFactory),
+                    [AgentRunners.Copilot] = new CopilotSessionFactory(gateway, stateDir, loggerFactory),
                 });
                 var pullRequests = new PullRequestToolFactory(pullRequestProviders, env, loggerFactory);
                 var worker = new AgentWorker(workspaces, agents, loggerFactory.CreateLogger<AgentWorker>(), pullRequests);

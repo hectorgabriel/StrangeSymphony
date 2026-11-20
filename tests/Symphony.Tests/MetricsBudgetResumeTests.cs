@@ -99,8 +99,8 @@ public class SessionResumeTests
     public void Resume_replaces_the_session_id_flag()
     {
         var settings = new ClaudeSettings("claude", null, new Dictionary<string, string>(), "acceptEdits", [], [], [], true, 1, 1, 1);
-        var fresh = ClaudeCommandLine.BuildArgs(settings, "Todo", "sid", null, false, "WI-1: t").ToList();
-        var resumed = ClaudeCommandLine.BuildArgs(settings, "Todo", "sid", null, false, "WI-1: t", resume: true).ToList();
+        var fresh = ClaudeCommandLine.BuildArgs(settings, null, "sid", null, false, "WI-1: t").ToList();
+        var resumed = ClaudeCommandLine.BuildArgs(settings, null, "sid", null, false, "WI-1: t", resume: true).ToList();
         Assert.Equal("sid", fresh[fresh.IndexOf("--session-id") + 1]);
         Assert.DoesNotContain("--resume", fresh);
         Assert.Equal("sid", resumed[resumed.IndexOf("--resume") + 1]);

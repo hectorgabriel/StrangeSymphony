@@ -11,7 +11,7 @@ public static class ClaudeCommandLine
 {
     public const string TrackerMcpServerName = McpConfigFile.TrackerServerName;
 
-    public static IReadOnlyList<string> BuildArgs(ClaudeSettings settings, string issueState, string sessionId, string? mcpConfigPath, bool hasTrackerTools, string title, bool resume = false)
+    public static IReadOnlyList<string> BuildArgs(ClaudeSettings settings, string? model, string sessionId, string? mcpConfigPath, bool hasTrackerTools, string title, bool resume = false)
     {
         var args = new List<string>
         {
@@ -27,7 +27,8 @@ public static class ClaudeCommandLine
             "--name", title,
         };
 
-        if (settings.ModelFor(issueState) is { } model)
+        // The session's route decides the model (ClaudeSettings.ModelFor for the dispatch state).
+        if (model is not null)
         {
             args.Add("--model");
             args.Add(model);

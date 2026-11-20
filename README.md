@@ -1,6 +1,6 @@
 # Symphony (.NET · Azure DevOps · Wrike · Claude Code)
 
-A .NET 10 implementation of the [Symphony service spec](SPEC.md). It watches a tracker (Azure Boards or Wrike) for work items, gives each eligible item its own workspace, and runs a headless **Claude Code** session on it until the item reaches its handoff state.
+A .NET 10 implementation of the [Symphony service spec](SPEC.md). It watches a tracker (Azure Boards or Wrike) for work items, gives each eligible item its own workspace, and runs a headless **Claude Code** session on it until the item reaches its handoff state. It can run **GitHub Copilot CLI** instead ([docs/copilot.md](docs/copilot.md)).
 
 ```
 Azure Boards ──poll──▶ Orchestrator ──dispatch──▶ Worker ──▶ claude -p (stream-json), cwd = <root>/WI-123
@@ -58,12 +58,14 @@ See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md#authentication-and-accounts)
 | `src/Symphony.AzureDevOps` | Azure Boards adapter: WIQL, batch fetch, normalization, `dispatchable`, tools ([profile](docs/adapters/azure-devops.md)) |
 | `src/Symphony.Wrike` | Wrike adapter: queue subtasks, custom status mapping, dependencies, tools ([profile](docs/adapters/wrike.md)) |
 | `src/Symphony.Claude` | Claude Code stream-json session runner |
+| `src/Symphony.Copilot` | GitHub Copilot CLI session runner ([docs](docs/copilot.md)) |
 | `src/Symphony.Cli` | `symphony` executable: host, loopback MCP tool gateway, dashboard and JSON API |
 | `tests/Symphony.Tests` | Conformance tests (§17) |
 
 ```bash
 dotnet test                                                 # core + extension conformance
 SYMPHONY_REAL_CLAUDE=1 dotnet test --filter RealIntegration # real claude CLI smoke test
+SYMPHONY_REAL_COPILOT=1 dotnet test --filter RealCopilot    # real copilot CLI smoke test (spends AI credits)
 ```
 
 ## Docs
@@ -72,6 +74,7 @@ SYMPHONY_REAL_CLAUDE=1 dotnet test --filter RealIntegration # real claude CLI sm
 - [docs/adapters/azure-devops.md](docs/adapters/azure-devops.md): the Azure DevOps adapter profile (config keys, mapping, tools, errors)
 - [docs/adapters/wrike.md](docs/adapters/wrike.md): the Wrike adapter profile
 - [docs/sdlc-pipeline.md](docs/sdlc-pipeline.md): one Wrike queue through analysis, development, testing and documentation, with the role agents and BossDream gates
+- [docs/copilot.md](docs/copilot.md): `agent.runner: copilot`, running the sessions with GitHub Copilot CLI instead of Claude Code: setup, settings, the agent home and trust, hooks, cost
 - [docs/hybrid-models.md](docs/hybrid-models.md): a model per status with `claude.model_by_state`, and Claude plus a self-hosted model behind a routing proxy
 - [docs/rework-loops.md](docs/rework-loops.md): `defects`, the reasons work goes back. The tester reports defects by category and severity before Con Defectos, and `/line` shows loops by category, by whose work it was, triage time and rework cost
 - [docs/audit-trail.md](docs/audit-trail.md): `audit`, a hash-chained record of who moved each task (agent, person, Symphony), every host tool call, gate results and the verified commit, on `/audit`

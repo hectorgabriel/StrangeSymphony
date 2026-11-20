@@ -55,7 +55,7 @@ public sealed class ClaudeCodeSessionFactory(IToolGateway? toolGateway, string p
             }
 
             var sessionId = request.ResumeSessionId ?? Guid.NewGuid().ToString();
-            var args = ClaudeCommandLine.BuildArgs(config.Claude, request.Issue.State, sessionId, mcpConfigPath, hasTools, $"{request.Issue.Identifier}: {request.Issue.Title}",
+            var args = ClaudeCommandLine.BuildArgs(config.Claude, request.EffectiveRoute.Model, sessionId, mcpConfigPath, hasTools, $"{request.Issue.Identifier}: {request.Issue.Title}",
                 resume: request.ResumeSessionId is not null);
             var psi = AgentProcess.StartInfo(config.Claude.Command, args, cwd, "claude.command", config.Hooks.Shell);
             // The tracker's credentials, and what the workflow strips from every workspace process (workspace.strip_env).

@@ -72,6 +72,40 @@ public sealed record ClaudeSettings(
 }
 
 /// <summary>
+/// GitHub Copilot CLI runner settings (front matter key <c>copilot</c>, used when <c>agent.runner</c> is
+/// <c>copilot</c>). See docs/copilot.md.
+/// </summary>
+public sealed record CopilotSettings(
+    string Command,
+    string? Model,
+    // Normalized state name -> model, overriding Model for issues in that state.
+    IReadOnlyDictionary<string, string> ModelByState,
+    // none | minimal | low | medium | high | xhigh | max; null means the model's default.
+    string? ReasoningEffort,
+    // --allow-tool rules (shell(git:*), write, url(...)); a -p run denies anything else that would prompt.
+    IReadOnlyList<string> AllowTools,
+    // --deny-tool rules; they win over every allow.
+    IReadOnlyList<string> DenyTools,
+    // --excluded-tools: tools the model never sees.
+    IReadOnlyList<string> ExcludedTools,
+    // COPILOT_HOME for agent sessions; null means a private directory under Symphony's state directory.
+    string? Home,
+    // Add workspace.root to the home's trustedFolders, so repository hooks (.claude/settings.json) and .mcp.json run.
+    bool TrustWorkspaceRoot,
+    IReadOnlyList<string> ExtraArgs,
+    int TurnTimeoutMs,
+    int StallTimeoutMs,
+    bool Resume = true) : IRunnerSettings
+{
+    public static readonly IReadOnlyList<string> ReasoningEfforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+    public string? ModelFor(string? state) =>
+        ModelByState.TryGetValue(StateNames.Normalize(state), out var model) ? model : Model;
+
+    bool IRunnerSettings.ResumeSessions => Resume;
+}
+
+/// <summary>
 /// Front matter key <c>pull_request</c> (extension): lets the agent open a pull request through the
 /// host, which first checks the branch and runs <see cref="VerifyCommand"/>. See docs/pull-requests.md.
 /// </summary>
@@ -138,7 +172,9 @@ public sealed record ServiceConfig(
     // Extension, audit.path: where the audit trail goes; null means <workspace.root>/.symphony-audit.jsonl.
     string? AuditPath = null,
     // Extension, defects: send-back statuses and defect categories; null means no report_defects tool.
-    DefectSettings? Defects = null)
+    DefectSettings? Defects = null,
+    // Extension, copilot: the GitHub Copilot CLI runner (agent.runner: copilot).
+    CopilotSettings? Copilot = null)
 {
     public BudgetSettings Budgets => Budget ?? BudgetSettings.None;
 
@@ -146,6 +182,7 @@ public sealed record ServiceConfig(
     public IRunnerSettings RunnerSettings => Agent.Runner switch
     {
         Agents.AgentRunners.Claude => Claude,
+        Agents.AgentRunners.Copilot => Copilot ?? throw new InvalidOperationException("agent.runner is copilot but the copilot section was not built"),
         var runner => throw new InvalidOperationException($"agent.runner '{runner}' is not supported"),
     };
 

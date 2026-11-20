@@ -44,7 +44,7 @@ hooks:
     git fetch origin --prune && git status --short
 
 agent:
-  # The coding agent: claude (the section below). Default claude.
+  # The coding agent: claude (the section below) or copilot (docs/copilot.md). Default claude.
   runner: claude
   max_concurrent_agents: 1
   max_turns: 10
