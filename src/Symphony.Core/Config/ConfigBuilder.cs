@@ -140,7 +140,7 @@ public sealed partial class ConfigBuilder(
         var claudeSettings = new ClaudeSettings(
             command,
             NullIfBlank(String(claude, "claude.model", "model")),
-            ModelByState(claude, activeStates, warnings),
+            ModelByState(claude, "claude", activeStates, warnings),
             String(claude, "claude.permission_mode", "permission_mode") ?? "acceptEdits",
             StringList(claude, "claude.allowed_tools", "allowed_tools") ?? [],
             StringList(claude, "claude.disallowed_tools", "disallowed_tools") ?? ["AskUserQuestion"],
@@ -150,6 +150,9 @@ public sealed partial class ConfigBuilder(
             Int(claude, "claude.read_timeout_ms", "read_timeout_ms", 5000, min: 1),
             Int(claude, "claude.stall_timeout_ms", "stall_timeout_ms", 300000, min: int.MinValue),
             Bool(claude, "claude.resume", "resume", true));
+
+        // copilot (extension; docs/copilot.md). Parsed always, so a mistake shows before the runner is switched on.
+        var copilotSettings = Copilot(root, activeStates, workflowDir, warnings);
 
         // budget (extension)
         var budget = Section(root, "budget");
@@ -162,7 +165,7 @@ public sealed partial class ConfigBuilder(
         int? port = server.ContainsKey("port") ? Int(server, "server.port", "port", 0, min: 0) : null;
 
         // Gates and the PR tool run inside a tool call, which the stall timer can't see; warn against the runner's timeout.
-        var stall = new StallLimit(claudeSettings.StallTimeoutMs, $"{runner}.stall_timeout_ms");
+        var stall = new StallLimit(runner == Agents.AgentRunners.Copilot ? copilotSettings.StallTimeoutMs : claudeSettings.StallTimeoutMs, $"{runner}.stall_timeout_ms");
         var pullRequest = PullRequest(root, stall, warnings);
         var gates = Gates(root, stall, warnings);
         var defects = Defects(root);
@@ -182,7 +185,8 @@ public sealed partial class ConfigBuilder(
             gates,
             stripEnv,
             auditPath,
-            defects);
+            defects,
+            copilotSettings);
     }
 
     /// <summary><c>defects</c> (extension; docs/rework-loops.md). Absent means no <c>report_defects</c> tool.</summary>
@@ -282,6 +286,38 @@ public sealed partial class ConfigBuilder(
 
     /// <summary>Time a gate may use on top of its commands' <c>timeout_ms</c>, for the git checks.</summary>
     public const int GateOverheadMs = 120000;
+
+    private CopilotSettings Copilot(IReadOnlyDictionary<string, object?> root, IReadOnlyList<string> activeStates, string workflowDir, List<string> warnings)
+    {
+        var section = Section(root, "copilot");
+        var command = String(section, "copilot.command", "command") ?? "copilot";
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            throw Invalid("copilot.command", "must be a non-empty shell command");
+        }
+
+        var effort = NullIfBlank(String(section, "copilot.reasoning_effort", "reasoning_effort"))?.Trim().ToLowerInvariant();
+        if (effort is not null && !CopilotSettings.ReasoningEfforts.Contains(effort))
+        {
+            throw Invalid("copilot.reasoning_effort", $"must be one of: {string.Join(", ", CopilotSettings.ReasoningEfforts)}");
+        }
+
+        var home = NullIfBlank(String(section, "copilot.home", "home"));
+        return new CopilotSettings(
+            command,
+            NullIfBlank(String(section, "copilot.model", "model")),
+            ModelByState(section, "copilot", activeStates, warnings),
+            effort,
+            StringList(section, "copilot.allow_tools", "allow_tools") ?? ["write"],
+            StringList(section, "copilot.deny_tools", "deny_tools") ?? [],
+            StringList(section, "copilot.excluded_tools", "excluded_tools") ?? [],
+            home is null ? null : ResolvePath(home, workflowDir, "copilot.home"),
+            Bool(section, "copilot.trust_workspace_root", "trust_workspace_root", true),
+            StringList(section, "copilot.extra_args", "extra_args") ?? [],
+            Int(section, "copilot.turn_timeout_ms", "turn_timeout_ms", 3600000, min: 1),
+            Int(section, "copilot.stall_timeout_ms", "stall_timeout_ms", 300000, min: int.MinValue),
+            Bool(section, "copilot.resume", "resume", true));
+    }
 
     /// <summary>The runner's stall timeout and the front matter field that sets it, for warnings.</summary>
     private sealed record StallLimit(int Ms, string Field);
@@ -460,18 +496,18 @@ public sealed partial class ConfigBuilder(
         return result;
     }
 
-    /// <summary><c>claude.model_by_state</c> (extension): a model per tracker state, keys normalized like state names.</summary>
-    private static Dictionary<string, string> ModelByState(IReadOnlyDictionary<string, object?> claude, IReadOnlyList<string> activeStates, List<string> warnings)
+    /// <summary><c>&lt;runner&gt;.model_by_state</c> (extension): a model per tracker state, keys normalized like state names.</summary>
+    private static Dictionary<string, string> ModelByState(IReadOnlyDictionary<string, object?> section, string name, IReadOnlyList<string> activeStates, List<string> warnings)
     {
         var result = new Dictionary<string, string>();
-        if (!claude.TryGetValue("model_by_state", out var raw) || raw is null)
+        if (!section.TryGetValue("model_by_state", out var raw) || raw is null)
         {
             return result;
         }
 
         if (raw is not Dictionary<string, object?> map)
         {
-            throw Invalid("claude.model_by_state", "must be a map of state name to model");
+            throw Invalid($"{name}.model_by_state", "must be a map of state name to model");
         }
 
         foreach (var (state, value) in map)
@@ -480,13 +516,13 @@ public sealed partial class ConfigBuilder(
             var model = value switch
             {
                 string s when !string.IsNullOrWhiteSpace(s) => s.Trim(),
-                _ => throw Invalid($"claude.model_by_state.{state}", "must be a non-empty model name"),
+                _ => throw Invalid($"{name}.model_by_state.{state}", "must be a non-empty model name"),
             };
 
             var key = StateNames.Normalize(state);
             if (!activeStates.Any(a => StateNames.Normalize(a) == key))
             {
-                warnings.Add($"claude.model_by_state names '{state}', which is not in tracker.active_states; no session starts in that state");
+                warnings.Add($"{name}.model_by_state names '{state}', which is not in tracker.active_states; no session starts in that state");
             }
 
             result[key] = model;

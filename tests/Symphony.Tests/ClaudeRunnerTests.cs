@@ -298,7 +298,7 @@ public sealed class ClaudeCommandLineTests : IDisposable
     {
         var settings = new ClaudeSettings("claude", "opus", new Dictionary<string, string> { ["in progress"] = "qwen3.8-27b-deep" },
             "acceptEdits", [], [], [], true, 1, 1, 1);
-        var args = ClaudeCommandLine.BuildArgs(settings, state, "sid", null, false, "WI-1: t");
+        var args = ClaudeCommandLine.BuildArgs(settings, settings.ModelFor(state), "sid", null, false, "WI-1: t");
         Assert.Equal(expected, args[args.ToList().IndexOf("--model") + 1]);
     }
 

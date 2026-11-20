@@ -56,3 +56,55 @@ public class RealIntegrationTests
         }
     }
 }
+
+/// <summary>Real Copilot CLI run. Reported as skipped unless SYMPHONY_REAL_COPILOT=1.</summary>
+public sealed class RealCopilotFactAttribute : FactAttribute
+{
+    public RealCopilotFactAttribute()
+    {
+        if (Environment.GetEnvironmentVariable("SYMPHONY_REAL_COPILOT") != "1")
+        {
+            Skip = "set SYMPHONY_REAL_COPILOT=1 to run against the installed copilot CLI (uses your Copilot login and AI credits)";
+        }
+    }
+}
+
+public class RealCopilotIntegrationTests
+{
+    [RealCopilotFact]
+    public async Task Real_copilot_runs_two_turns_and_calls_host_side_tracker_tool()
+    {
+        using var tmp = new TempWorkflow("tracker: {kind: fake}");
+        tmp.Write("tracker: {kind: fake}\nworkspace: {root: \"{ROOT}\"}\nagent: {runner: copilot}\ncopilot:\n  turn_timeout_ms: 180000");
+        var tracker = new FakeTracker();
+        var config = new ConfigBuilder([new FakeTrackerFactory(tracker)], _ => null).Build(WorkflowLoader.Load(tmp.Path), tmp.Path);
+        var ws = Path.Combine(config.WorkspaceRoot, "WI-1");
+        Directory.CreateDirectory(ws);
+
+        await using var gateway = new McpToolGateway(NullLogger<McpToolGateway>.Instance);
+        await gateway.StartAsync(NullLoggerFactory.Instance, default);
+        var events = new List<AgentEvent>();
+        var factory = new Symphony.Copilot.CopilotSessionFactory(gateway, Path.Combine(tmp.Dir, "state"), NullLoggerFactory.Instance);
+
+        await using (var session = await factory.StartAsync(new AgentSessionRequest(TestIssues.Make("1"), ws, config, tracker), e => { lock (events) events.Add(e); }, default))
+        {
+            await session.RunTurnAsync("Call the tracker echo tool exactly once with arguments {\"ping\": 1}, then reply with just: ok", TestIssues.Make("1"), default);
+            await session.RunTurnAsync("Create a file named second.txt containing the word second, then reply with just: done", TestIssues.Make("1"), default);
+        }
+
+        Assert.Equal("second", File.ReadAllText(Path.Combine(ws, "second.txt")).Trim());
+        lock (events)
+        {
+            var completed = events.Where(e => e.Event == AgentEventNames.TurnCompleted).ToList();
+            Assert.Equal(2, completed.Count);
+            Assert.True(completed[1].AbsoluteTotals!.TotalTokens > completed[0].AbsoluteTotals!.TotalTokens);
+        }
+
+        lock (tracker.ToolCalls)
+        {
+            var call = Assert.Single(tracker.ToolCalls);
+            Assert.Equal("echo", call.Tool);
+            Assert.Equal("1", call.IssueId);
+        }
+    }
+}

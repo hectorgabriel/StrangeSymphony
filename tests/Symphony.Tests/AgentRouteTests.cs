@@ -32,10 +32,10 @@ public class AgentRouteTests
     {
         using var tmp = new TempWorkflow("tracker: {kind: fake}");
 
-        var ex = Assert.Throws<WorkflowException>(() => Build(tmp, "agent:\n  runner: copilot"));
+        var ex = Assert.Throws<WorkflowException>(() => Build(tmp, "agent:\n  runner: codex"));
 
         Assert.Contains("agent.runner", ex.Message);
-        Assert.Contains("claude", ex.Message);
+        Assert.Contains("claude, copilot", ex.Message);
     }
 
     [Fact]
