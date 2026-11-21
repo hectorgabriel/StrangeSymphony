@@ -126,6 +126,18 @@ public sealed class AzureDevOpsAdapter : ITrackerAdapter
     public Task<AgentToolResult> ExecuteAgentToolAsync(string name, JsonObject arguments, Issue issue, CancellationToken ct) =>
         AzureDevOpsTools.ExecuteAsync(_client, name, arguments, issue, ct);
 
+    /// <summary>The configured <c>work_item_types</c> and their states; empty (no check) when the queue takes every type.</summary>
+    public async Task<IReadOnlyList<WorkItemTypeStates>> FetchStatesByTypeAsync(CancellationToken ct)
+    {
+        var result = new List<WorkItemTypeStates>();
+        foreach (var type in _options.WorkItemTypes)
+        {
+            result.Add(new WorkItemTypeStates(type, await _client.GetWorkItemTypeStatesAsync(type, ct)));
+        }
+
+        return result;
+    }
+
     // ---- Helpers -----------------------------------------------------------------------------
 
     private string BuildWiql(IReadOnlyList<string> states, int afterId)

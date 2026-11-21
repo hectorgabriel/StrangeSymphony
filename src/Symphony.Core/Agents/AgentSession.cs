@@ -47,6 +47,8 @@ public static class AgentEventNames
     public const string SessionStarted = "session_started";
     public const string StartupFailed = "startup_failed";
     public const string TurnStarted = "turn_started";
+    /// <summary>The worker ended the session after <c>agent.max_idle_turns</c> turns without progress.</summary>
+    public const string SessionIdle = "session_idle";
     public const string TurnCompleted = "turn_completed";
     public const string TurnFailed = "turn_failed";
     public const string TurnCancelled = "turn_cancelled";

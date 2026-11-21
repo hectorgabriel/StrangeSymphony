@@ -15,7 +15,7 @@ The adapter profile required by SPEC §11.2.
 | `token` | **secret**, `$VAR` | `$AZURE_DEVOPS_PAT` when omitted | Personal access token. It needs **Work Items: Read & Write** (Read is enough if you don't use the tools). An empty resolution counts as missing. Literal tokens work but are discouraged (SPEC §15.3). |
 | `assigned_to` | string | none (every item can be dispatched) | `@me` means the identity behind the PAT, resolved once with `connectionData`. You can also give an identity GUID, or a unique name or display name (case-insensitive). |
 | `area_path` | string | none | Limits the scope to `[System.AreaPath] UNDER '<value>'`. |
-| `work_item_types` | list of strings | none (all types) | Limits the scope to these types. |
+| `work_item_types` | list of strings | none (all types) | Limits the scope to these types. On startup Symphony reads each listed type's states and warns when one lacks a gate or allowed state (an Agile Task has no "Resolved"); see [agent-guardrails.md](../agent-guardrails.md). |
 | `identifier_prefix` | string | `WI` | `identifier` becomes `<prefix>-<id>`. |
 | `block_on_predecessors` | bool | `true` | Open predecessors make an item non-dispatchable. |
 | `api_version` | string | `7.1` | REST API version for WIQL, batch and update calls. Comments always use `7.1-preview.4`. |

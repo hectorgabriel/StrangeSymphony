@@ -8,6 +8,7 @@ using Symphony.Core.Agents;
 using Symphony.Core.Config;
 using Symphony.Core.Orchestration;
 using Symphony.Core.PullRequests;
+using Symphony.Core.Tracker;
 using Symphony.Core.Workflow;
 using Symphony.Core.Workspaces;
 using Symphony.Wrike;
@@ -130,6 +131,7 @@ namespace Symphony.Cli
                 log.LogInformation("action=startup outcome=completed workflow={Path} tracker={Tracker} workspace_root={Root} max_concurrent_agents={Max}",
                     workflowPath, initial.Config.Tracker.Kind, initial.Config.WorkspaceRoot, initial.Config.Agent.MaxConcurrentAgents);
 
+                await CheckTrackerStatesAsync(initial, log, stop.Token);
                 await orchestrator.RunAsync(stop.Token);
                 return 0;
             }
@@ -145,6 +147,25 @@ namespace Symphony.Cli
             finally
             {
                 if (status is not null) await status.DisposeAsync();
+            }
+        }
+
+        /// <summary>Warns about states agents are meant to reach that a queued work item type doesn't have; never fails startup.</summary>
+        internal static async Task CheckTrackerStatesAsync(EffectiveWorkflow workflow, ILogger log, CancellationToken ct)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            try
+            {
+                var types = await workflow.Tracker.FetchStatesByTypeAsync(timeout.Token);
+                foreach (var warning in WorkflowStateCheck.Warnings(workflow.Config, types))
+                {
+                    log.LogWarning("action=state_check outcome=warning reason={Reason}", warning);
+                }
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                log.LogWarning("action=state_check outcome=skipped reason={Reason}", ex.Message);
             }
         }
     }

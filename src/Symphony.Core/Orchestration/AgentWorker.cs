@@ -117,8 +117,13 @@ public sealed class AgentWorker(
             sessionTracker = new Defects.DefectTracker(sessionTracker, defects, onEvent);
         }
 
-        // Outermost, so the audit trail sees what the agent got back, including a gate's refusal.
+        // Outside the gates and defects, so a state the agent may not reach is refused before anything runs.
+        sessionTracker = new StateGuardTracker(sessionTracker, config);
+
+        // Outside the guard, so the audit trail sees what the agent got back, including a refusal.
         sessionTracker = new Audit.AuditedTracker(sessionTracker, onEvent);
+        var progress = new ProgressCountingTracker(sessionTracker);
+        sessionTracker = progress;
 
         // Same route as the orchestrator's dispatch: both read it from this workflow for the dispatch state.
         var route = config.RouteFor(issue.State);
@@ -139,6 +144,10 @@ public sealed class AgentWorker(
         try
         {
             var maxTurns = config.Agent.MaxTurns;
+            var maxIdle = config.Agent.MaxIdleTurns;
+            var idleTurns = 0;
+            var workspaceBefore = maxIdle > 0 ? await ProgressProbe.WorkspaceAsync(workspace.Path, ct) : null;
+            var changesBefore = 0;
             for (var turn = 1; ; turn++)
             {
                 string prompt;
@@ -209,6 +218,24 @@ public sealed class AgentWorker(
                     return;
                 }
 
+                if (maxIdle > 0)
+                {
+                    var workspaceAfter = await ProgressProbe.WorkspaceAsync(workspace.Path, ct);
+                    var moved = workspaceAfter is null || workspaceAfter != workspaceBefore || progress.Changes != changesBefore;
+                    idleTurns = moved ? 0 : idleTurns + 1;
+                    workspaceBefore = workspaceAfter;
+                    changesBefore = progress.Changes;
+                    if (idleTurns >= maxIdle)
+                    {
+                        logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=idle idle_turns={IdleTurns}", issue.Id, issue.Identifier, idleTurns);
+                        onEvent(new AgentEvent(AgentEventNames.SessionIdle, DateTimeOffset.UtcNow)
+                        {
+                            Message = $"no progress in {idleTurns} turn(s): nothing changed in the workspace or the tracker",
+                        });
+                        return;
+                    }
+                }
+
                 if (turn >= maxTurns)
                 {
                     logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=max_turns max_turns={MaxTurns}", issue.Id, issue.Identifier, maxTurns);
@@ -231,8 +258,9 @@ public sealed class AgentWorker(
         Symphony resumed this session for {issue.Identifier}: {issue.Title}.
         The previous run ended before the work item left state "{issue.State}" (it was interrupted, failed or ran
         out of turns), so the task is not finished. Your instructions and progress are earlier in this conversation.
-        Check the workspace first, since the last step may be incomplete. Then finish the remaining work and move
-        the work item to the workflow's handoff state when done.
+        Check the workspace first, since the last step may be incomplete, and read the work item's latest comments:
+        someone may have answered a question you asked. Then finish the remaining work and move the work item to the
+        workflow's handoff state when done.
         """;
 
     /// <summary>Continuation guidance only; the original task prompt is already in thread history (SPEC 7.1).</summary>

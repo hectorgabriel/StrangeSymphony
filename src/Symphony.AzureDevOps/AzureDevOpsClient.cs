@@ -98,6 +98,18 @@ public sealed class AzureDevOpsClient : IDisposable
     public Task<JsonNode?> GetCommentsAsync(int id, int top, CancellationToken ct) =>
         SendAsync(HttpMethod.Get, $"{P}/_apis/wit/workItems/{id}/comments?$top={top}&order=desc&api-version=7.1-preview.4", null, null, ct);
 
+    /// <summary>The state names of one work item type's workflow in the project.</summary>
+    public async Task<IReadOnlyList<string>> GetWorkItemTypeStatesAsync(string type, CancellationToken ct)
+    {
+        var json = await SendAsync(HttpMethod.Get, $"{P}/_apis/wit/workitemtypes/{Uri.EscapeDataString(type)}/states?api-version={V}", null, null, ct);
+        if (json?["value"] is not JsonArray value)
+        {
+            throw new TrackerException(TrackerErrorCategories.Response, "work item type states response missing value");
+        }
+
+        return value.Select(s => s?["name"]?.GetValue<string>()).OfType<string>().ToList();
+    }
+
     private async Task<JsonNode?> SendAsync(HttpMethod method, string relative, JsonNode? body, string? contentType, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(method, relative);

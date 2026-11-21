@@ -128,6 +128,13 @@ public sealed class FakeAzureDevOps : HttpMessageHandler
             return Json(item.DeepClone());
         }
 
+        if (path.Contains("/_apis/wit/workitemtypes/", StringComparison.Ordinal) && path.EndsWith("/states", StringComparison.Ordinal))
+        {
+            var type = Uri.UnescapeDataString(path.Split('/')[^2]);
+            string[] names = type == "Task" ? ["New", "Active", "Closed", "Removed"] : ["New", "Active", "Resolved", "Closed", "Removed"];
+            return Json(new JsonObject { ["count"] = names.Length, ["value"] = new JsonArray(names.Select(n => (JsonNode)new JsonObject { ["name"] = n, ["category"] = "x" }).ToArray()) });
+        }
+
         if (path.Contains("/comments"))
         {
             return request.Method == HttpMethod.Post
@@ -154,6 +161,21 @@ public class AzureDevOpsAdapterTests
         var settings = new TrackerSettings("azure_devops", provider, [], ["To Do", "Doing"], terminal ?? ["Done", "Removed"]);
         var adapter = (AzureDevOpsAdapter)new AzureDevOpsAdapterFactory(fake).Create(settings, n => Env.GetValueOrDefault(n), NullLoggerFactory.Instance);
         return (adapter, fake);
+    }
+
+    [Fact]
+    public async Task States_by_type_are_read_for_the_configured_work_item_types_only()
+    {
+        var (all, allFake) = Create();
+        Assert.Empty(await all.FetchStatesByTypeAsync(default));
+        Assert.Empty(allFake.Requests);
+
+        var (adapter, fake) = Create("    work_item_types: [User Story, Task]");
+        var types = await adapter.FetchStatesByTypeAsync(default);
+
+        Assert.Equal(["User Story", "Task"], types.Select(t => t.Type));
+        Assert.Equal(["New", "Active", "Closed", "Removed"], types[1].States);
+        Assert.Contains(fake.Requests, r => r.Path.StartsWith("/org/Proj/_apis/wit/workitemtypes/User%20Story/states?", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -9,10 +9,30 @@ namespace Symphony.Core.Orchestration;
 /// the per-issue counters and the board's handoff rows. Tracker state stays the source of truth; every
 /// restored entry goes through the normal retry refresh before anything is dispatched.
 /// </summary>
-public sealed record OrchestratorState(int Version, DateTimeOffset SavedAt, IReadOnlyList<SavedIssue> Issues, IReadOnlyList<HandoffRow> Handoffs, SavedUsage? Usage = null)
+public sealed record OrchestratorState(
+    int Version,
+    DateTimeOffset SavedAt,
+    IReadOnlyList<SavedIssue> Issues,
+    IReadOnlyList<HandoffRow> Handoffs,
+    SavedUsage? Usage = null,
+    IReadOnlyList<SavedWait>? Waiting = null)
 {
     public const int CurrentVersion = 1;
 }
+
+/// <summary>
+/// An issue parked after an idle session (agent.max_idle_turns). <see cref="Baseline"/> is the tracker's
+/// <c>UpdatedAt</c> after Symphony's comment; a different one wakes the issue. Not known yet means the next poll sets it.
+/// </summary>
+public sealed record SavedWait(
+    string IssueId,
+    string Identifier,
+    string? Url,
+    string? State,
+    DateTimeOffset Since,
+    string? Reason,
+    DateTimeOffset? Baseline,
+    bool BaselineKnown);
 
 /// <summary>
 /// One claimed issue. <see cref="Kind"/> is <c>retry</c> for a queued retry or continuation and
