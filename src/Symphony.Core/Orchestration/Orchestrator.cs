@@ -38,6 +38,25 @@ public sealed class Orchestrator
     private sealed record RetryDueMsg(string IssueId, Guid Token) : Msg;
     private sealed record TickFetchedMsg(TickFetch Fetch) : Msg;
     private sealed record RetryFetchedMsg(RetryEntry Retry, WorkflowLease Lease, IReadOnlyList<Issue>? Refreshed, Exception? Error) : Msg;
+    private sealed record WaitBaselineMsg(string IssueId, Guid Token, Issue? Issue) : Msg;
+
+    /// <summary>
+    /// An issue whose last session ended idle (agent.max_idle_turns): not dispatched again until the tracker shows a
+    /// change made after Symphony's comment, i.e. a new <see cref="Issue.UpdatedAt"/> or another state.
+    /// </summary>
+    private sealed class WaitEntry
+    {
+        public required string Identifier { get; init; }
+        public string? Url { get; init; }
+        /// <summary>Normalized state the issue was parked in.</summary>
+        public required string State { get; init; }
+        public required DateTimeOffset Since { get; init; }
+        public required string Reason { get; init; }
+        public Guid Token { get; init; } = Guid.NewGuid();
+        /// <summary>Set once the baseline is read; until then the issue stays parked.</summary>
+        public bool BaselineKnown { get; set; }
+        public DateTimeOffset? Baseline { get; set; }
+    }
 
     /// <summary>One tick's tracker reads, gathered off the loop. Owns the snapshot lease until applied.</summary>
     private sealed class TickFetch
@@ -94,6 +113,8 @@ public sealed class Orchestrator
         public long LastReportedNanoAiu { get; set; }
         public int TurnCount { get; set; }
         public StopDisposition? Stop { get; set; }
+        /// <summary>The worker ended the session for making no progress (<see cref="AgentEventNames.SessionIdle"/>).</summary>
+        public bool Idle { get; set; }
     }
 
     private sealed class RetryEntry
@@ -156,6 +177,7 @@ public sealed class Orchestrator
     private readonly Dictionary<string, RetryEntry> _refreshing = new();
     private readonly HashSet<string> _completed = new();
     private readonly Dictionary<string, IssueTrack> _tracks = new();
+    private readonly Dictionary<string, WaitEntry> _waiting = new();
     private readonly List<Task> _cleanups = new();
     private readonly List<Task> _fetches = new();
     private long _inputTokens;
@@ -289,6 +311,7 @@ public sealed class Orchestrator
             case WorkspaceMsg m: OnWorkspace(m); break;
             case RetryDueMsg m: OnRetryDue(m, ct); break;
             case RetryFetchedMsg m: OnRetryFetched(m); break;
+            case WaitBaselineMsg m: OnWaitBaseline(m); break;
         }
     }
 
@@ -414,6 +437,7 @@ public sealed class Orchestrator
 
             _candidates = Eligibility.SortForDispatch(fetch.Candidates ?? []).ToList();
             _candidatesConfig = config;
+            WakeWaiting(_candidates);
             _lastPollAt = _time.GetUtcNow();
             _lastPollError = null;
 
@@ -558,6 +582,7 @@ public sealed class Orchestrator
         && Eligibility.IsRoutable(issue, config)
         && !_running.ContainsKey(issue.Id)
         && !_claimed.Contains(issue.Id)
+        && !_waiting.ContainsKey(issue.Id)
         && BudgetBlock(issue.Id, config) is null
         && HasSlotFor(issue, config);
 
@@ -665,6 +690,7 @@ public sealed class Orchestrator
         if (ev.TurnId is not null) entry.TurnId = ev.TurnId;
         if (ev.Event == AgentEventNames.TurnStarted) entry.TurnCount++;
         if (ev.Event == AgentEventNames.TurnCompleted) entry.TurnsCompleted++;
+        if (ev.Event == AgentEventNames.SessionIdle) entry.Idle = true;
         if (ev.RateLimits is not null) _rateLimits = ev.RateLimits.DeepClone();
         if (ev.Gate is { } gate)
         {
@@ -752,7 +778,7 @@ public sealed class Orchestrator
             StopKind.Stalled => RunOutcomes.Stalled,
             StopKind.Shutdown => RunOutcomes.Interrupted,
             StopKind.IssueBudget or StopKind.DayBudget => RunOutcomes.Budget,
-            _ => m.Error is null ? RunOutcomes.Completed : RunOutcomes.Failed,
+            _ => m.Error is not null ? RunOutcomes.Failed : entry.Idle ? RunOutcomes.Waiting : RunOutcomes.Completed,
         }, entry.Stop?.Reason ?? (m.Error is null ? null : Describe(m.Error)));
 
         switch (entry.Stop?.Kind)
@@ -795,7 +821,12 @@ public sealed class Orchestrator
                 return;
         }
 
-        if (m.Error is null)
+        if (m.Error is null && entry.Idle)
+        {
+            _completed.Add(issue.Id);
+            Park(issue, entry.LastMessage ?? "the agent made no progress");
+        }
+        else if (m.Error is null)
         {
             _completed.Add(issue.Id);
             _logger.LogInformation("action=worker_exit outcome=completed issue_id={IssueId} issue_identifier={IssueIdentifier} session_id={SessionId}",
@@ -815,6 +846,103 @@ public sealed class Orchestrator
             _logger.LogWarning("action=worker_exit outcome=failed issue_id={IssueId} issue_identifier={IssueIdentifier} session_id={SessionId} reason={Reason}",
                 issue.Id, issue.Identifier, entry.SessionId, reason);
             ScheduleRetry(issue.Id, nextAttempt, issue.Identifier, issue.Url, reason, continuation: false);
+        }
+    }
+
+    // ---- Waiting for input (extension; docs/agent-guardrails.md) -------------------------------
+
+    /// <summary>
+    /// Stops dispatching an issue whose session made no progress, typically because the agent asked a question.
+    /// Keeps its track, so the session that asked resumes when the issue wakes.
+    /// </summary>
+    private void Park(Issue issue, string reason)
+    {
+        _claimed.Remove(issue.Id);
+        CancelRetry(issue.Id);
+        if (_tracks.TryGetValue(issue.Id, out var track))
+        {
+            track.CleanExitsInState = 0;
+        }
+
+        var wait = new WaitEntry
+        {
+            Identifier = issue.Identifier,
+            Url = issue.Url,
+            State = StateNames.Normalize(issue.State),
+            Since = _time.GetUtcNow(),
+            Reason = reason,
+        };
+        _waiting[issue.Id] = wait;
+        _logger.LogInformation("action=worker_exit outcome=waiting_for_input issue_id={IssueId} issue_identifier={IssueIdentifier} reason={Reason}",
+            issue.Id, issue.Identifier, reason);
+
+        // The baseline is read after Symphony's own comment, so only a later change wakes the issue.
+        var text = $"Symphony paused this task: {reason}. The agent is probably waiting for an answer; see its last comment."
+            + " Reply with a comment or edit the work item, and Symphony will pick it up again on the next poll.";
+        var lease = _store.Acquire();
+        StartFetch(async () =>
+        {
+            Issue? current = null;
+            using (lease)
+            {
+                try
+                {
+                    var posted = await lease.Workflow.Tracker.ExecuteAgentToolAsync("add_comment", new JsonObject { ["text"] = text }, issue, CancellationToken.None);
+                    if (!posted.Success)
+                    {
+                        _logger.LogWarning("action=wait_comment outcome=failed issue_id={IssueId} issue_identifier={IssueIdentifier} reason={Reason}",
+                            issue.Id, issue.Identifier, posted.Output?.ToJsonString());
+                    }
+
+                    var refreshed = await lease.Workflow.Tracker.FetchIssuesByIdsAsync([issue.Id], CancellationToken.None);
+                    current = refreshed.Count > 0 ? refreshed[0] : null;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning("action=wait_comment outcome=failed issue_id={IssueId} issue_identifier={IssueIdentifier} reason={Reason}", issue.Id, issue.Identifier, ex.Message);
+                }
+            }
+
+            Post(new WaitBaselineMsg(issue.Id, wait.Token, current));
+        });
+    }
+
+    private void OnWaitBaseline(WaitBaselineMsg m)
+    {
+        if (_waiting.TryGetValue(m.IssueId, out var wait) && wait.Token == m.Token && m.Issue is { } issue)
+        {
+            wait.Baseline = issue.UpdatedAt;
+            wait.BaselineKnown = true;
+        }
+
+        // Without a fresh read the next poll's copy becomes the baseline (WakeWaiting).
+    }
+
+    /// <summary>Wakes parked issues the tracker shows a change for; forgets those that left the queue.</summary>
+    private void WakeWaiting(IReadOnlyList<Issue> candidates)
+    {
+        foreach (var (id, wait) in _waiting.ToList())
+        {
+            var issue = candidates.FirstOrDefault(c => c.Id == id);
+            if (issue is null)
+            {
+                _waiting.Remove(id);
+                continue;
+            }
+
+            if (!wait.BaselineKnown)
+            {
+                wait.Baseline = issue.UpdatedAt;
+                wait.BaselineKnown = true;
+                continue;
+            }
+
+            if (StateNames.Normalize(issue.State) != wait.State || issue.UpdatedAt != wait.Baseline)
+            {
+                _waiting.Remove(id);
+                _logger.LogInformation("action=wait outcome=woken issue_id={IssueId} issue_identifier={IssueIdentifier} state={State} updated_at={UpdatedAt}",
+                    id, issue.Identifier, issue.State, issue.UpdatedAt);
+            }
         }
     }
 
@@ -1409,6 +1537,23 @@ public sealed class Orchestrator
         }
 
         _handoffs.AddRange(saved.Handoffs.Where(h => !_claimed.Contains(h.IssueId)).Take(HandoffLimit));
+        foreach (var w in saved.Waiting ?? [])
+        {
+            if (!string.IsNullOrEmpty(w.IssueId) && !string.IsNullOrEmpty(w.Identifier) && !_claimed.Contains(w.IssueId))
+            {
+                _waiting[w.IssueId] = new WaitEntry
+                {
+                    Identifier = w.Identifier,
+                    Url = w.Url,
+                    State = w.State ?? "",
+                    Since = w.Since,
+                    Reason = w.Reason ?? "the agent made no progress",
+                    Baseline = w.Baseline,
+                    BaselineKnown = w.BaselineKnown,
+                };
+            }
+        }
+
         if (saved.Usage is { } usage && DateOnly.TryParseExact(usage.Day, "yyyy-MM-dd", out var day))
         {
             _usageDay = day;
@@ -1435,7 +1580,10 @@ public sealed class Orchestrator
 
         issues.Sort((a, b) => string.CompareOrdinal(a.IssueId, b.IssueId));
         var usage = _usageTokens > 0 ? new SavedUsage(_usageDay.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), _usageTokens) : null;
-        var state = new OrchestratorState(OrchestratorState.CurrentVersion, _time.GetUtcNow(), issues, _handoffs.ToList(), usage);
+        var waiting = _waiting.OrderBy(w => w.Key, StringComparer.Ordinal)
+            .Select(w => new SavedWait(w.Key, w.Value.Identifier, w.Value.Url, w.Value.State, w.Value.Since, w.Value.Reason, w.Value.BaselineKnown ? w.Value.Baseline : null, w.Value.BaselineKnown))
+            .ToList();
+        var state = new OrchestratorState(OrchestratorState.CurrentVersion, _time.GetUtcNow(), issues, _handoffs.ToList(), usage, waiting.Count > 0 ? waiting : null);
         _stateFile.Save(OrchestratorStateFile.PathFor(_store.Current.Config.WorkspaceRoot), state);
     }
 
@@ -1537,6 +1685,11 @@ public sealed class Orchestrator
         if (_claimed.Contains(issue.Id))
         {
             return ("claimed", "Claimed by a run that is finishing");
+        }
+
+        if (_waiting.TryGetValue(issue.Id, out var wait))
+        {
+            return ("awaiting_input", $"Waiting for input since {wait.Since:yyyy-MM-dd HH:mm} UTC ({wait.Reason}); comment on or edit the work item to continue");
         }
 
         if (!Eligibility.HasRequiredFields(issue))

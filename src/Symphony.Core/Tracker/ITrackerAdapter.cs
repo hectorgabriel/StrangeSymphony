@@ -58,7 +58,17 @@ public interface ITrackerAdapter : IDisposable
 
     Task<AgentToolResult> ExecuteAgentToolAsync(string name, JsonObject arguments, Issue issue, CancellationToken ct) =>
         Task.FromResult(AgentToolResult.Fail("unsupported_tool", $"unsupported tool: {name}"));
+
+    /// <summary>
+    /// The states each work item type in the queue can take, for the startup check (<see cref="WorkflowStateCheck"/>).
+    /// Empty when the adapter can't tell, which skips the check.
+    /// </summary>
+    Task<IReadOnlyList<WorkItemTypeStates>> FetchStatesByTypeAsync(CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<WorkItemTypeStates>>([]);
 }
+
+/// <summary>A work item type and the states its tracker workflow allows.</summary>
+public sealed record WorkItemTypeStates(string Type, IReadOnlyList<string> States);
 
 public sealed record TrackerStateDefaults(IReadOnlyList<string>? ActiveStates, IReadOnlyList<string>? TerminalStates);
 

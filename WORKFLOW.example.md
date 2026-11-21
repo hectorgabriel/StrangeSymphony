@@ -12,7 +12,8 @@ tracker:
     # work items assigned to the identity behind their own PAT.
     assigned_to: "@me"
     # area_path: "Your Project\\Team A"
-    # work_item_types: [User Story, Bug, Task]
+    # Symphony warns on startup when a listed type lacks a gate state (Agile Tasks have no "Resolved").
+    # work_item_types: [User Story, Bug]
     # block_on_predecessors: true
   # Only items carrying every label (Azure DevOps tag) are dispatched.
   required_labels: [agent]
@@ -60,6 +61,11 @@ agent:
   max_retry_backoff_ms: 300000
   # Sessions that end with the issue in the same state retry after 1 s this many times, then back off.
   max_fast_continuations: 3
+  # Turns in a row that change nothing (workspace or tracker) end the session; the issue then waits until
+  # someone comments on or edits it. 0 = off. See docs/agent-guardrails.md.
+  max_idle_turns: 2
+  # The only states update_state may move an issue to. Default: any state that is not terminal.
+  # allowed_states: [Resolved]
 
 claude:
   command: claude
@@ -98,3 +104,7 @@ for progress from earlier attempts before starting over.
    (what changed, how it was verified, anything a reviewer should look at).
 5. Move the work item to "Resolved" with `update_state` when the work is ready for human review.
    If you are blocked, explain why with `add_comment` and leave the state unchanged.
+
+## When the task is ambiguous
+Take the most reasonable reading and keep going, and state every assumption in your handoff comment.
+Ask a question with `add_comment` only when the choice is destructive or hard to undo, then end your turn.

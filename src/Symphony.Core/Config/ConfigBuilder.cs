@@ -128,7 +128,9 @@ public sealed partial class ConfigBuilder(
             ByStateLimits(agent),
             Int(agent, "agent.max_fast_continuations", "max_fast_continuations", 3, min: 0),
             runner,
-            RunnerByState(agent, activeStates, warnings));
+            RunnerByState(agent, activeStates, warnings),
+            Int(agent, "agent.max_idle_turns", "max_idle_turns", 2, min: 0),
+            AllowedStates(agent));
 
         // claude
         var claude = Section(root, "claude");
@@ -175,6 +177,7 @@ public sealed partial class ConfigBuilder(
         var pullRequest = PullRequest(root, stall, warnings);
         var gates = Gates(root, stall, warnings);
         var defects = Defects(root);
+        WarnAboutAllowedStates(agentSettings, gates, defects, warnings);
 
         return new ServiceConfig(
             Path.GetFullPath(workflowPath),
@@ -193,6 +196,50 @@ public sealed partial class ConfigBuilder(
             auditPath,
             defects,
             copilotSettings);
+    }
+
+    /// <summary><c>agent.allowed_states</c>: absent means any non-terminal state; an empty list is a mistake.</summary>
+    private static List<string>? AllowedStates(IReadOnlyDictionary<string, object?> agent)
+    {
+        if (StringList(agent, "agent.allowed_states", "allowed_states") is not { } list)
+        {
+            return null;
+        }
+
+        var states = list.Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+        if (states.Count == 0)
+        {
+            throw Invalid("agent.allowed_states", "must name at least one state; leave it out to allow every state that is not terminal");
+        }
+
+        return states;
+    }
+
+    /// <summary>A gate or send-back state the agent may not move to can never be reached by an agent.</summary>
+    private static void WarnAboutAllowedStates(
+        AgentSettings agent, IReadOnlyDictionary<string, GateSettings>? gates, DefectSettings? defects, List<string> warnings)
+    {
+        if (agent.AllowedStates is not { } allowed)
+        {
+            return;
+        }
+
+        var names = string.Join(", ", allowed);
+        foreach (var gate in gates?.Values ?? [])
+        {
+            if (!allowed.Any(s => StateNames.Normalize(s) == StateNames.Normalize(gate.State)))
+            {
+                warnings.Add($"gates.{gate.State}: agent.allowed_states ({names}) does not include \"{gate.State}\", so agents can never move an issue there");
+            }
+        }
+
+        foreach (var state in defects?.States ?? [])
+        {
+            if (!allowed.Any(s => StateNames.Normalize(s) == state))
+            {
+                warnings.Add($"defects.states: agent.allowed_states ({names}) does not include \"{state}\", so agents can't send work back there");
+            }
+        }
     }
 
     /// <summary><c>defects</c> (extension; docs/rework-loops.md). Absent means no <c>report_defects</c> tool.</summary>

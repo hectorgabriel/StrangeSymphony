@@ -57,6 +57,8 @@ public static class RunOutcomes
     public const string Released = "released";
     public const string Budget = "budget";
     public const string Interrupted = "interrupted";
+    /// <summary>Ended for making no progress; the issue waits for someone to change it (agent.max_idle_turns).</summary>
+    public const string Waiting = "waiting";
 
     public static bool IsFailure(string? outcome) => outcome is Failed or Stalled;
 }

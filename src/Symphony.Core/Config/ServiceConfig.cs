@@ -27,8 +27,26 @@ public sealed record AgentSettings(
     // Extension, agent.runner: the coding agent sessions run with (Agents.AgentRunners).
     string Runner = Agents.AgentRunners.Claude,
     // Extension, agent.runner_by_state: normalized state name -> runner, overriding Runner in that state.
-    IReadOnlyDictionary<string, string>? RunnerByState = null)
+    IReadOnlyDictionary<string, string>? RunnerByState = null,
+    // Extension, agent.max_idle_turns: consecutive turns without progress that end a session and park the issue
+    // until someone changes it in the tracker; 0 turns this off. See docs/agent-guardrails.md.
+    int MaxIdleTurns = 2,
+    // Extension, agent.allowed_states: the only states update_state may move an issue to (as written in the
+    // workflow); null means any state that is not terminal.
+    IReadOnlyList<string>? AllowedStates = null)
 {
+    /// <summary>
+    /// Whether an agent may move an issue to <paramref name="state"/>: one of <see cref="AllowedStates"/> when set,
+    /// else any state that is not in <paramref name="terminalStates"/>.
+    /// </summary>
+    public bool MayMoveTo(string state, IReadOnlyList<string> terminalStates)
+    {
+        var n = StateNames.Normalize(state);
+        return AllowedStates is not null
+            ? AllowedStates.Any(s => StateNames.Normalize(s) == n)
+            : !terminalStates.Any(s => StateNames.Normalize(s) == n);
+    }
+
     /// <summary>The runner a session for an issue in <paramref name="state"/> runs with.</summary>
     public string RunnerFor(string? state) =>
         RunnerByState is not null && RunnerByState.TryGetValue(StateNames.Normalize(state), out var runner) ? runner : Runner;

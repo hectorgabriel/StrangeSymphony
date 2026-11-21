@@ -3,6 +3,7 @@ using Symphony.Cli;
 using Symphony.Core.Agents;
 using Symphony.Core.Domain;
 using Symphony.Core.Orchestration;
+using Symphony.Core.Tracker;
 using Symphony.Core.Workflow;
 using Symphony.Core.Workspaces;
 
@@ -87,20 +88,24 @@ public sealed class AgentWorkerTests : IDisposable
         var issue = TestIssues.Make("1", state: "Done");
         _tracker.Put(issue);
 
+        // Outermost the progress counter, then the audit trail, then the state guard, then defects and gates.
+        static ITrackerAdapter Guarded(ITrackerAdapter session) =>
+            Assert.IsType<Symphony.Core.Tracker.StateGuardTracker>(
+                Assert.IsType<Symphony.Core.Audit.AuditedTracker>(Assert.IsType<ProgressCountingTracker>(session).Inner).Inner).Inner;
+
         var plain = new FakeFactory([]);
         await Worker(plain).RunAsync(issue, null, Workflow(), _ => { }, _ => { }, default);
-        Assert.Same(_tracker, Assert.IsType<Symphony.Core.Audit.AuditedTracker>(plain.Request!.Tracker).Inner);
+        Assert.Same(_tracker, Guarded(plain.Request!.Tracker));
 
         var gated = new FakeFactory([]);
         await Worker(gated).RunAsync(issue, null, Workflow("gates:\n  Done:\n    run: dotnet test"), _ => { }, _ => { }, default);
-        var audited = Assert.IsType<Symphony.Core.Audit.AuditedTracker>(gated.Request!.Tracker);
-        var tracker = Assert.IsType<Symphony.Core.Gates.GatedTracker>(audited.Inner);
+        var tracker = Assert.IsType<Symphony.Core.Gates.GatedTracker>(Guarded(gated.Request!.Tracker));
         Assert.Equal(_tracker.AgentToolSpecs().Select(s => s.Name), tracker.AgentToolSpecs().Select(s => s.Name));
 
         // Defect reports sit outside the gates, so a missing report is refused before a gate runs.
         var reporting = new FakeFactory([]);
         await Worker(reporting).RunAsync(issue, null, Workflow("gates:\n  Done:\n    run: dotnet test\ndefects:\n  states: [Rework]\n  categories: [ui]"), _ => { }, _ => { }, default);
-        var defects = Assert.IsType<Symphony.Core.Defects.DefectTracker>(Assert.IsType<Symphony.Core.Audit.AuditedTracker>(reporting.Request!.Tracker).Inner);
+        var defects = Assert.IsType<Symphony.Core.Defects.DefectTracker>(Guarded(reporting.Request!.Tracker));
         Assert.IsType<Symphony.Core.Gates.GatedTracker>(defects.Inner);
         Assert.Contains(defects.AgentToolSpecs(), s => s.Name == Symphony.Core.Defects.DefectTracker.ReportTool);
     }

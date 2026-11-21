@@ -188,7 +188,7 @@ const icon = n => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`
 const LABEL = {
   running: ['l-green', 'Running'], stopping: ['l-orange', 'Stopping'], ready: ['l-lime', 'Ready'], waiting: ['l-yellow', 'Waiting for a slot'],
   claimed: ['l-blue', 'Claimed'], retrying: ['l-orange', 'Retrying'], blocked: ['l-red', 'Blocked'], held: ['l-purple', 'Held'],
-  missing_labels: ['l-sky', 'Missing label'], invalid: ['l-red', 'Invalid'], handed_off: ['l-blue', 'Handed off'], paused: ['l-red', 'Paused: budget'],
+  missing_labels: ['l-sky', 'Missing label'], invalid: ['l-red', 'Invalid'], handed_off: ['l-blue', 'Handed off'], paused: ['l-red', 'Paused: budget'], awaiting_input: ['l-sky', 'Waiting for input'],
 };
 function label(status) {
   const [c, t] = LABEL[status] ?? ['l-blue', status];
@@ -242,7 +242,7 @@ async function load() {
     const done = (s.handoffs ?? []).map(h => ({ ...h, status: 'handed_off', why: handoffWhy(h), badges: [badge('flag', h.state ?? 'Out of scope'), badge('clock', time(h.at))] }));
 
     $('board').replaceChildren(
-      list('Not eligible', 'Blocked, held, over budget or missing a label', queue.filter(c => ['blocked', 'held', 'missing_labels', 'invalid', 'paused'].includes(c.status)).map(q), 'Nothing held back'),
+      list('Not eligible', 'Blocked, held, over budget, missing a label or waiting for an answer', queue.filter(c => ['blocked', 'held', 'missing_labels', 'invalid', 'paused', 'awaiting_input'].includes(c.status)).map(q), 'Nothing held back'),
       list('Up next', 'Starts in priority order as slots free up', queue.filter(c => ['ready', 'waiting', 'claimed'].includes(c.status)).map(q), 'Nothing waiting'),
       list('Running', 'An agent session is working', run, 'No active sessions'),
       list('Retrying', 'Scheduled to run again', retry, 'Nothing scheduled'),
@@ -524,7 +524,7 @@ function pitch(id, i) { let h = 2166136261; for (const c of id + ':' + i) h = Ma
 // Status as a performance direction plus plain words.
 const DIR = {
   ready: ['attacca', 'starts on the next poll'], waiting: ['tacet', 'waiting for a free slot'], claimed: ['segue', 'a run is finishing'],
-  blocked: ['fermata', 'blocked'], held: ['senza', 'held by the tracker'], missing_labels: ['senza', 'missing a label'], invalid: ['ad lib.', 'invalid record'], paused: ['tacet', 'over the token budget'],
+  blocked: ['fermata', 'blocked'], held: ['senza', 'held by the tracker'], missing_labels: ['senza', 'missing a label'], invalid: ['ad lib.', 'invalid record'], paused: ['tacet', 'over the token budget'], awaiting_input: ['fermata', 'waiting for an answer'],
 };
 
 function stave(width, opts) {
@@ -601,7 +601,7 @@ function render() {
   $('parts').textContent = `${s.running.length + s.retrying.length} part${s.running.length + s.retrying.length === 1 ? '' : 's'}`;
 
   const item = c => {
-    const li = el('li'), [d, plain] = DIR[c.status] ?? [c.status, ''], dir = el('span', 'dir' + (['blocked', 'held', 'missing_labels', 'invalid', 'paused'].includes(c.status) ? ' stop' : ''), d);
+    const li = el('li'), [d, plain] = DIR[c.status] ?? [c.status, ''], dir = el('span', 'dir' + (['blocked', 'held', 'missing_labels', 'invalid', 'paused', 'awaiting_input'].includes(c.status) ? ' stop' : ''), d);
     dir.title = plain;
     const t = el('div', 't'); t.append(link(c), ' ', c.title ?? '');
     li.append(t, dir, el('div', 'why', `${c.reason}${c.priority != null ? ` · priority ${c.priority}` : ''}`));
@@ -609,7 +609,7 @@ function render() {
   };
   const fill = (id, items, empty) => $(id).replaceChildren(...(items.length ? items : [el('li', 'empty', empty)]));
   fill('next', queue.filter(c => ['ready', 'waiting', 'claimed'].includes(c.status)).map(item), 'No one waiting');
-  fill('held', queue.filter(c => ['blocked', 'held', 'missing_labels', 'invalid', 'paused'].includes(c.status)).map(item), 'Everyone is eligible');
+  fill('held', queue.filter(c => ['blocked', 'held', 'missing_labels', 'invalid', 'paused', 'awaiting_input'].includes(c.status)).map(item), 'Everyone is eligible');
   fill('done', (s.handoffs ?? []).map(hh => {
     const li = el('li'), t = el('div', 't'); t.append(link(hh), ' ', hh.title ?? '(no longer visible)');
     li.append(t, el('span', 'dir', time(hh.at)), el('div', 'why', handoffWhy(hh))); return li;
