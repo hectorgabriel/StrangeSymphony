@@ -127,7 +127,8 @@ public sealed partial class ConfigBuilder(
             Int(agent, "agent.max_retry_backoff_ms", "max_retry_backoff_ms", 300000, min: 1),
             ByStateLimits(agent),
             Int(agent, "agent.max_fast_continuations", "max_fast_continuations", 3, min: 0),
-            runner);
+            runner,
+            RunnerByState(agent, activeStates, warnings));
 
         // claude
         var claude = Section(root, "claude");
@@ -164,8 +165,13 @@ public sealed partial class ConfigBuilder(
         var server = Section(root, "server");
         int? port = server.ContainsKey("port") ? Int(server, "server.port", "port", 0, min: 0) : null;
 
-        // Gates and the PR tool run inside a tool call, which the stall timer can't see; warn against the runner's timeout.
-        var stall = new StallLimit(runner == Agents.AgentRunners.Copilot ? copilotSettings.StallTimeoutMs : claudeSettings.StallTimeoutMs, $"{runner}.stall_timeout_ms");
+        // Gates and the PR tool run inside a tool call, which the stall timer can't see; warn against the tightest
+        // stall timeout among the runners in use.
+        var stall = agentSettings.RunnersInUse
+            .Select(r => new StallLimit(r == Agents.AgentRunners.Copilot ? copilotSettings.StallTimeoutMs : claudeSettings.StallTimeoutMs, $"{r}.stall_timeout_ms"))
+            .Where(s => s.Ms > 0)
+            .OrderBy(s => s.Ms)
+            .FirstOrDefault() ?? new StallLimit(0, "");
         var pullRequest = PullRequest(root, stall, warnings);
         var gates = Gates(root, stall, warnings);
         var defects = Defects(root);
@@ -491,6 +497,41 @@ public sealed partial class ConfigBuilder(
             {
                 result[StateNames.Normalize(state)] = n;
             }
+        }
+
+        return result;
+    }
+
+    /// <summary><c>agent.runner_by_state</c> (extension): a runner per tracker state, keys normalized like state names.</summary>
+    private static Dictionary<string, string> RunnerByState(IReadOnlyDictionary<string, object?> agent, IReadOnlyList<string> activeStates, List<string> warnings)
+    {
+        var result = new Dictionary<string, string>();
+        if (!agent.TryGetValue("runner_by_state", out var raw) || raw is null)
+        {
+            return result;
+        }
+
+        if (raw is not Dictionary<string, object?> map)
+        {
+            throw Invalid("agent.runner_by_state", "must be a map of state name to runner");
+        }
+
+        foreach (var (state, value) in map)
+        {
+            // A bad entry fails, as for model_by_state: falling back would run the stage on the wrong agent.
+            var runner = value is string s && !string.IsNullOrWhiteSpace(s) ? Agents.AgentRunners.Normalize(s) : null;
+            if (runner is null || !Agents.AgentRunners.All.Contains(runner))
+            {
+                throw Invalid($"agent.runner_by_state.{state}", $"must be one of: {string.Join(", ", Agents.AgentRunners.All)}");
+            }
+
+            var key = StateNames.Normalize(state);
+            if (!activeStates.Any(a => StateNames.Normalize(a) == key))
+            {
+                warnings.Add($"agent.runner_by_state names '{state}', which is not in tracker.active_states; no session starts in that state");
+            }
+
+            result[key] = runner;
         }
 
         return result;

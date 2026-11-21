@@ -46,6 +46,7 @@ hooks:
 agent:
   # The coding agent: claude (the section below) or copilot (docs/copilot.md). Default claude.
   runner: claude
+  # A runner per status, e.g. development on Copilot: runner_by_state: {Plan Aprobado: copilot}
   max_concurrent_agents: 1
   max_turns: 10
   max_retry_backoff_ms: 300000

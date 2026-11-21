@@ -53,6 +53,7 @@ hooks:
 agent:
   # The coding agent: claude (the section below) or copilot (docs/copilot.md). Default claude.
   runner: claude
+  # A runner per status, e.g. development on Copilot: runner_by_state: {Plan Aprobado: copilot}
   # Keep this low on a Pro plan; each session draws from your own usage limits.
   max_concurrent_agents: 2
   max_turns: 20
