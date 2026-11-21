@@ -148,6 +148,27 @@ public class RunnerByStateTests
     }
 
     [Fact]
+    public async Task Copilot_ai_credits_are_recorded_per_run_and_reported()
+    {
+        await using var h = new OrchestratorHarness("agent: {runner: copilot}\ncopilot: {model: gpt-6-sol}");
+        h.Tracker.Put(TestIssues.Make("1"));
+        h.Start();
+        await Wait.Until(() => h.Workers.Length == 1, "dispatch");
+        h.Workers[0].Emit(new AgentEvent(AgentEventNames.TurnCompleted, DateTimeOffset.UtcNow) { TurnId = "1", AbsoluteTotals = new TokenTotals(100, 10, 110, 2_500_000_000) });
+        h.Workers[0].Emit(new AgentEvent(AgentEventNames.TurnCompleted, DateTimeOffset.UtcNow) { TurnId = "2", AbsoluteTotals = new TokenTotals(200, 20, 220, 4_000_000_000) });
+        h.Tracker.Put(TestIssues.Make("1", state: "Review"));
+        h.Workers[0].Succeed();
+        await Wait.Until(() => h.Orchestrator.GetMetrics().Totals.Runs == 1, "run recorded");
+
+        var m = h.Orchestrator.GetMetrics();
+        Assert.Equal(4, m.Totals.AiCredits);
+        var model = Assert.Single(m.ByModel);
+        Assert.Equal(("copilot", "gpt-6-sol", 4d), (model.Runner, model.Model, model.AiCredits));
+        Assert.Contains("\"nano_aiu\":4000000000", File.ReadAllText(MetricsLog.PathFor(h.Tmp.WorkspaceRoot)), StringComparison.Ordinal);
+        Assert.Equal(4, (double)Symphony.Cli.StatusServer.MetricsJson(m)["totals"]!["ai_credits"]!);
+    }
+
+    [Fact]
     public void Metrics_group_models_by_runner()
     {
         using var tmp = new TempWorkflow("tracker: {kind: fake}");

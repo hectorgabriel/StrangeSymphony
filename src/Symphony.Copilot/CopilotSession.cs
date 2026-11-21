@@ -43,6 +43,11 @@ public sealed class CopilotSessionFactory(IToolGateway? toolGateway, string priv
         }
 
         var home = settings.Home ?? DefaultHome;
+        if (settings.Home is null && settings.SessionRetentionDays > 0)
+        {
+            PruneSessions(home, PrivateDir("copilot-usage"), TimeSpan.FromDays(settings.SessionRetentionDays));
+        }
+
         if (settings.TrustWorkspaceRoot)
         {
             try
@@ -71,6 +76,64 @@ public sealed class CopilotSessionFactory(IToolGateway? toolGateway, string priv
         {
             await session.DisposeAsync();
             throw;
+        }
+    }
+
+    private readonly Lock _pruneGate = new();
+    private DateTimeOffset _lastPrune = DateTimeOffset.MinValue;
+
+    /// <summary>
+    /// Deletes sessions in Symphony's own agent home that haven't been used for <paramref name="retention"/>, with
+    /// their token baselines. Copilot keeps every session forever, unencrypted. Runs at most once an hour.
+    /// </summary>
+    internal void PruneSessions(string home, string usageDir, TimeSpan retention)
+    {
+        var now = DateTimeOffset.UtcNow;
+        lock (_pruneGate)
+        {
+            if (now - _lastPrune < TimeSpan.FromHours(1))
+            {
+                return;
+            }
+
+            _lastPrune = now;
+        }
+
+        var sessions = Path.Combine(home, "session-state");
+        if (!Directory.Exists(sessions))
+        {
+            return;
+        }
+
+        var logger = loggerFactory.CreateLogger<CopilotSessionFactory>();
+        foreach (var dir in Directory.EnumerateDirectories(sessions))
+        {
+            var name = Path.GetFileName(dir);
+            // Only session directories (UUIDs), and only by their newest file, so a long-idle but just-resumed one stays.
+            if (!Guid.TryParse(name, out _))
+            {
+                continue;
+            }
+
+            try
+            {
+                var last = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
+                    .Select(File.GetLastWriteTimeUtc)
+                    .DefaultIfEmpty(Directory.GetLastWriteTimeUtc(dir))
+                    .Max();
+                if (now - new DateTimeOffset(last, TimeSpan.Zero) < retention)
+                {
+                    continue;
+                }
+
+                Directory.Delete(dir, recursive: true);
+                File.Delete(Path.Combine(usageDir, $"session-{string.Concat(name.Where(char.IsAsciiLetterOrDigit))}.json"));
+                logger.LogInformation("action=copilot_session_prune outcome=deleted session_id={SessionId} last_used={LastUsed:o}", name, last);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                logger.LogWarning("action=copilot_session_prune outcome=failed session_id={SessionId} error={Error}", name, ex.Message);
+            }
         }
     }
 
@@ -105,7 +168,7 @@ public sealed class CopilotSession : IAgentSession
     private bool _created;
     private int _turn;
     // Copilot's usage file counts the whole session, earlier Symphony runs included; this is where this run began.
-    private TokenTotals _baseline = new(0, 0, 0);
+    private TokenTotals _baseline = new(0, 0, 0, 0);
 
     internal CopilotSession(AgentSessionRequest request, CopilotSettings settings, string home, string usageDir, Action<AgentEvent> onEvent, ILogger logger)
     {
@@ -415,14 +478,15 @@ public sealed class CopilotSession : IAgentSession
         long Count(string key) => Long(details[key]?["tokenCount"]);
         var input = Count("input") + Count("cache_read") + Count("cache_write");
         var output = Count("output");
+        var nanoAiu = Long(usage["totalNanoAiu"]);
         if (ThreadId is { } sid)
         {
-            SaveBaseline(sid, input, output);
+            SaveBaseline(sid, input, output, nanoAiu);
         }
 
         input = Math.Max(0, input - _baseline.InputTokens);
         output = Math.Max(0, output - _baseline.OutputTokens);
-        return new TokenTotals(input, output, input + output);
+        return new TokenTotals(input, output, input + output, Math.Max(0, nanoAiu - _baseline.NanoAiu));
     }
 
     private string BaselinePath(string sessionId) =>
@@ -435,20 +499,20 @@ public sealed class CopilotSession : IAgentSession
             var node = JsonNode.Parse(File.ReadAllText(BaselinePath(sessionId)));
             var input = Long(node?["input"]);
             var output = Long(node?["output"]);
-            return new TokenTotals(input, output, input + output);
+            return new TokenTotals(input, output, input + output, Long(node?["nano_aiu"]));
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {
             // Unknown (a session from before this file existed, or another machine): its earlier tokens count again once.
-            return new TokenTotals(0, 0, 0);
+            return new TokenTotals(0, 0, 0, 0);
         }
     }
 
-    private void SaveBaseline(string sessionId, long input, long output)
+    private void SaveBaseline(string sessionId, long input, long output, long nanoAiu)
     {
         try
         {
-            File.WriteAllText(BaselinePath(sessionId), new JsonObject { ["input"] = input, ["output"] = output }.ToJsonString());
+            File.WriteAllText(BaselinePath(sessionId), new JsonObject { ["input"] = input, ["output"] = output, ["nano_aiu"] = nanoAiu }.ToJsonString());
         }
         catch (IOException ex)
         {

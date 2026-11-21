@@ -48,6 +48,8 @@ The `claude` section stays as it is and is ignored while no status runs on Claud
 | `turn_timeout_ms` | `3600000` | A run that prints nothing for this long is stopped (`turn_timeout`). |
 | `stall_timeout_ms` | `300000` | The orchestrator's stall detection; `<= 0` turns it off. Gate and PR warnings use it. |
 | `resume` | `true` | Continue the task's last session in the same status, runner and model. |
+| `max_ai_credits` | no cap | `--max-ai-credits` for each session: Copilot's own soft cap, at least `30`. |
+| `session_retention_days` | `14` | Sessions in Symphony's own agent home unused this long are deleted; `0` keeps them. Not applied when `home` is set. |
 
 How Claude's permission settings translate:
 
@@ -75,7 +77,7 @@ Agent sessions run with their own `COPILOT_HOME`, by default `copilot-home` unde
 
 - **Login:** on macOS the login is kept in the keychain, so the separate home needs no second login. If a run fails because it isn't signed in, run `COPILOT_HOME=<that directory> copilot login` once, or set `copilot.home: ~/.copilot` to share your normal home.
 - **Trust:** Copilot skips repository hooks and `.mcp.json` in folders it doesn't trust, and its `--trust-folder` flag can't be combined with `--session-id`. Symphony adds `workspace.root` (and its real path, if a symlink is on the way) to `trustedFolders` in the home's `config.json`; subfolders are trusted with it. Turn this off with `trust_workspace_root: false`.
-- **Clean up:** session history is stored unencrypted under `<home>/session-state/` and never expires. Delete old sessions there when you no longer need them.
+- **Clean up:** Copilot stores session history unencrypted under `<home>/session-state/` and never deletes it. In Symphony's own home, sessions unused for `session_retention_days` (default 14) are deleted when a session starts, at most once an hour, with their token baselines. A task idle that long starts a new session next time instead of resuming. A home you set with `copilot.home` is never pruned; clean it up yourself.
 
 ## 5. Environment and secrets
 
@@ -93,7 +95,11 @@ Copilot reads `CLAUDE.md`, `.claude/agents`, `.claude/skills` and `.claude/comma
 
 ## 7. Cost
 
-Copilot bills in AI credits, priced per token, from your plan. Every model call resends the conversation, and a trivial run costs about 2 to 6.5 credits (17,000 to 24,000 tokens of system prompt and tools). `budget.max_tokens_per_issue` and `budget.max_tokens_per_day` count Copilot sessions the same way as Claude sessions. To cap a single run's credits as well, add `extra_args: ["--max-ai-credits=50"]` (minimum 30).
+Copilot bills in AI credits, priced per token, from your plan. Every model call resends the conversation, and a trivial run costs about 2 to 6.5 credits (17,000 to 24,000 tokens of system prompt and tools). `budget.max_tokens_per_issue` and `budget.max_tokens_per_day` count Copilot sessions the same way as Claude sessions. To cap each session's credits as well, set `copilot.max_ai_credits` (at least 30); Copilot treats it as a soft limit.
+
+Each Copilot run records the AI credits it used (`nano_aiu` in the metrics log; 10^9 nano AIU = 1 credit), taken from `--usage-output-file` like the tokens. `/line` shows an AI credits tile and column, and `/api/v1/metrics` has `totals.ai_credits` and `by_model[].ai_credits`. On legacy plans billed in premium requests, Copilot reports no credits and the column stays empty.
+
+Quota and rate-limit observations from Copilot (`session.quota_observation`) appear as `rate_limits` in `/api/v1/state`, as Claude's rate-limit events do. A run that hits the plan's limit fails with Copilot's quota message and is retried with backoff.
 
 ## 8. Check it with the real CLI
 

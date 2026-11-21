@@ -90,6 +90,8 @@ public sealed class Orchestrator
         public long LastReportedInput { get; set; }
         public long LastReportedOutput { get; set; }
         public long LastReportedTotal { get; set; }
+        public long NanoAiu { get; set; }
+        public long LastReportedNanoAiu { get; set; }
         public int TurnCount { get; set; }
         public StopDisposition? Stop { get; set; }
     }
@@ -705,6 +707,8 @@ public sealed class Orchestrator
             entry.LastReportedInput = Math.Max(entry.LastReportedInput, totals.InputTokens);
             entry.LastReportedOutput = Math.Max(entry.LastReportedOutput, totals.OutputTokens);
             entry.LastReportedTotal = Math.Max(entry.LastReportedTotal, totals.TotalTokens);
+            entry.NanoAiu += Math.Max(0, totals.NanoAiu - entry.LastReportedNanoAiu);
+            entry.LastReportedNanoAiu = Math.Max(entry.LastReportedNanoAiu, totals.NanoAiu);
             entry.InputTokens += dIn;
             entry.OutputTokens += dOut;
             entry.TotalTokens += dTotal;
@@ -1126,7 +1130,8 @@ public sealed class Orchestrator
             error is null ? null : Truncate(error, 300),
             e.Resumed,
             _metrics.IsRework(e.Issue.Id, e.DispatchState),
-            Runner: e.Runner));
+            Runner: e.Runner,
+            NanoAiu: e.NanoAiu));
         Audit(new AuditRecord(AuditRecord.RunEnded, AuditRecord.BySymphony, e.Issue.Id, e.Issue.Identifier, now, e.Issue.State,
             RunId: e.RunId.ToString(), SessionId: e.ThreadId, Model: e.Model, Attempt: e.RetryAttempt, Resumed: e.Resumed,
             Outcome: outcome, Error: error is null ? null : Truncate(error, 300), Turns: e.TurnCount, TotalTokens: e.TotalTokens,

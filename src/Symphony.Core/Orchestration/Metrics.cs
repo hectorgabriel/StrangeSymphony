@@ -34,7 +34,9 @@ public sealed record MetricRecord(
     bool Rework = false,
     string? FromState = null,
     // The agent runner (agent.runner) of a run or defects record; missing on lines written before runners existed.
-    string? Runner = null)
+    string? Runner = null,
+    // GitHub Copilot's billed usage for the run (10^9 nano AIU = 1 AI credit); 0 for runners that don't report it.
+    long NanoAiu = 0)
 {
     public const string Run = "run";
     public const string Handoff = "handoff";
@@ -78,7 +80,9 @@ public sealed record MetricsTotals(
     int ResumedRuns,
     double? AvgCycleSeconds,
     int GateChecks = 0,
-    int GateRejections = 0);
+    int GateRejections = 0,
+    // AI credits Copilot runs reported (docs/copilot.md); 0 when no run reported any.
+    double AiCredits = 0);
 
 public sealed record StateMetrics(
     string State,
@@ -110,7 +114,7 @@ public sealed record GateMetrics(
     IReadOnlyDictionary<string, int> RejectionsByCategory);
 
 /// <summary>Runs of one model on one runner; <see cref="Runner"/> is <c>claude</c> for lines written before runners existed.</summary>
-public sealed record ModelMetrics(string Model, int Runs, long InputTokens, long OutputTokens, long TotalTokens, double AgentSeconds, string Runner = Agents.AgentRunners.Claude);
+public sealed record ModelMetrics(string Model, int Runs, long InputTokens, long OutputTokens, long TotalTokens, double AgentSeconds, string Runner = Agents.AgentRunners.Claude, double AiCredits = 0);
 
 public sealed record DayMetrics(string Day, int Runs, int ClosedIssues, long TotalTokens, double AgentSeconds);
 
@@ -214,6 +218,9 @@ public sealed class MetricsLog(ILogger logger)
 {
     public const string FileName = ".symphony-metrics.jsonl";
     private const string DefaultModel = "default";
+
+    /// <summary>Nano AIU to AI credits, to two decimals.</summary>
+    private static double Credits(long nanoAiu) => Math.Round(nanoAiu / 1e9, 2);
     private const int ReportDays = 14;
     private const int ReportIssues = 50;
 
@@ -405,7 +412,8 @@ public sealed class MetricsLog(ILogger logger)
             runs.Count(r => r.Resumed),
             cycles.Count > 0 ? Round(cycles.Average()) : null,
             gateChecks.Count,
-            gateChecks.Count(r => r.Outcome != MetricRecord.GatePassed));
+            gateChecks.Count(r => r.Outcome != MetricRecord.GatePassed),
+            Credits(runs.Sum(r => r.NanoAiu)));
 
         var byState = runs.GroupBy(r => r.State ?? "").Select(g =>
         {
@@ -426,7 +434,8 @@ public sealed class MetricsLog(ILogger logger)
         }).OrderByDescending(s => s.TotalTokens).ToList();
 
         var byModel = runs.GroupBy(r => (Runner: Agents.AgentRunners.Normalize(r.Runner), Model: r.Model ?? DefaultModel))
-            .Select(g => new ModelMetrics(g.Key.Model, g.Count(), g.Sum(r => r.InputTokens), g.Sum(r => r.OutputTokens), g.Sum(r => r.TotalTokens), Round(g.Sum(r => r.Seconds)), g.Key.Runner))
+            .Select(g => new ModelMetrics(g.Key.Model, g.Count(), g.Sum(r => r.InputTokens), g.Sum(r => r.OutputTokens), g.Sum(r => r.TotalTokens), Round(g.Sum(r => r.Seconds)), g.Key.Runner,
+                Credits(g.Sum(r => r.NanoAiu))))
             .OrderByDescending(m => m.TotalTokens).ToList();
 
         var today = Day(now, zone);

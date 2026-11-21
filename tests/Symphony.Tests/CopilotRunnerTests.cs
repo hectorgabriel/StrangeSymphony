@@ -51,7 +51,7 @@ public sealed class CopilotRunnerTests : IDisposable
         echo '{"type":"assistant.message","data":{"content":"working '$n'","toolRequests":[]},"id":"6"}'
         echo '{"type":"session.warning","data":{"warningType":"hook","message":"hook said hi"},"id":"7"}'
         cat > "$USAGE" <<EOF
-        {"totalNanoAiu":1000000000,"tokenDetails":{"input":{"tokenCount":$((10*n))},"cache_read":{"tokenCount":$((5*n))},"cache_write":{"tokenCount":$((5*n))},"output":{"tokenCount":$((7*n))}}}
+        {"totalNanoAiu":$((1500000000*n)),"tokenDetails":{"input":{"tokenCount":$((10*n))},"cache_read":{"tokenCount":$((5*n))},"cache_write":{"tokenCount":$((5*n))},"output":{"tokenCount":$((7*n))}}}
         EOF
         echo '{"type":"result","timestamp":"2026-11-20T22:51:30.063Z","sessionId":"'"$SID"'","exitCode":0,"usage":{"premiumRequests":'$n'}}'
         """;
@@ -125,8 +125,8 @@ public sealed class CopilotRunnerTests : IDisposable
         var completed = events.Where(e => e.Event == AgentEventNames.TurnCompleted).ToList();
         Assert.Equal(["1", "2"], completed.Select(e => e.TurnId));
         // The usage file counts the whole session: input includes cache reads and writes.
-        Assert.Equal(new TokenTotals(20, 7, 27), completed[0].AbsoluteTotals);
-        Assert.Equal(new TokenTotals(40, 14, 54), completed[1].AbsoluteTotals);
+        Assert.Equal(new TokenTotals(20, 7, 27, 1_500_000_000), completed[0].AbsoluteTotals);
+        Assert.Equal(new TokenTotals(40, 14, 54, 3_000_000_000), completed[1].AbsoluteTotals);
         Assert.Equal("working 1 [permission denials: 1]", completed[0].Message);
         Assert.Contains(events, e => e.Event == AgentEventNames.ToolCall && e.Message == "tool:bash");
         Assert.Contains(events, e => e.Event == AgentEventNames.Notification && e.Message!.StartsWith("bash failed: Permission denied", StringComparison.Ordinal));
@@ -145,7 +145,7 @@ public sealed class CopilotRunnerTests : IDisposable
         Environment.SetEnvironmentVariable("COPILOT_ALLOW_ALL", "true");
         try
         {
-            var (config, ws) = Setup("  reasoning_effort: high\n  excluded_tools: [web_fetch]");
+            var (config, ws) = Setup("  reasoning_effort: high\n  excluded_tools: [web_fetch]\n  max_ai_credits: 50");
             await using (var session = await Start(config, ws))
             {
                 await session.RunTurnAsync("go", TestIssues.Make("1"), default);
@@ -155,7 +155,7 @@ public sealed class CopilotRunnerTests : IDisposable
             var args = Runs()[0];
             Assert.Equal(["--output-format", "json"], args[..2]);
             foreach (var flag in new[] { "--no-ask-user", "--sync-session=off", "--disable-builtin-mcps", "--model=claude-sonnet-5.5", "--reasoning-effort=high",
-                "--allow-tool=write", "--allow-tool=shell(git:*)", "--deny-tool=shell(git push)", "--excluded-tools=web_fetch" })
+                "--allow-tool=write", "--allow-tool=shell(git:*)", "--deny-tool=shell(git push)", "--excluded-tools=web_fetch", "--max-ai-credits=50" })
             {
                 Assert.Contains(flag, args);
             }
@@ -229,7 +229,7 @@ public sealed class CopilotRunnerTests : IDisposable
 
         Assert.Contains($"--resume={id}", Runs()[1]);
         // The session's file says 40 in / 14 out by now; the first run already counted 20 / 7.
-        Assert.Equal(new TokenTotals(20, 7, 27), Events().Single(e => e.Event == AgentEventNames.TurnCompleted).AbsoluteTotals);
+        Assert.Equal(new TokenTotals(20, 7, 27, 1_500_000_000), Events().Single(e => e.Event == AgentEventNames.TurnCompleted).AbsoluteTotals);
     }
 
     [Fact]
@@ -321,6 +321,53 @@ public sealed class CopilotRunnerTests : IDisposable
         Assert.Equal(AgentErrorCodes.InvalidWorkspaceCwd, ex.Code);
     }
 
+    private static string OldSession(string home, string? id = null, int daysAgo = 30)
+    {
+        var dir = Path.Combine(home, "session-state", id ?? Guid.NewGuid().ToString());
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "events.jsonl");
+        File.WriteAllText(file, "{}");
+        File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddDays(-daysAgo));
+        return dir;
+    }
+
+    [Fact]
+    public async Task Sessions_unused_past_the_retention_are_deleted_from_symphonys_own_home()
+    {
+        var (config, ws) = Setup("  session_retention_days: 7");
+        var home = Path.Combine(StateDir, "copilot-home");
+        var old = OldSession(home);
+        var recent = OldSession(home, daysAgo: 2);
+        var notASession = OldSession(home, "notes");
+        var baselines = Path.Combine(StateDir, "copilot-usage");
+        Directory.CreateDirectory(baselines);
+        var oldBaseline = Path.Combine(baselines, $"session-{Path.GetFileName(old).Replace("-", "", StringComparison.Ordinal)}.json");
+        File.WriteAllText(oldBaseline, "{}");
+
+        await using (await Start(config, ws))
+        {
+        }
+
+        Assert.False(Directory.Exists(old));
+        Assert.False(File.Exists(oldBaseline));
+        Assert.True(Directory.Exists(recent));
+        Assert.True(Directory.Exists(notASession));
+    }
+
+    [Fact]
+    public async Task A_configured_home_is_never_pruned()
+    {
+        var home = Path.Combine(_tmp.Dir, "my-home");
+        var old = OldSession(home);
+        var (config, ws) = Setup($"  home: \"{TempWorkflow.YamlPath(home)}\"\n  session_retention_days: 1");
+
+        await using (await Start(config, ws))
+        {
+        }
+
+        Assert.True(Directory.Exists(old));
+    }
+
     public void Dispose() => _tmp.Dispose();
 }
 
@@ -346,6 +393,8 @@ public class CopilotConfigTests
         Assert.True(c.TrustWorkspaceRoot);
         Assert.True(c.Resume);
         Assert.Equal(300000, c.StallTimeoutMs);
+        Assert.Null(c.MaxAiCredits);
+        Assert.Equal(14, c.SessionRetentionDays);
     }
 
     [Fact]
@@ -374,6 +423,8 @@ public class CopilotConfigTests
     [InlineData("copilot: {reasoning_effort: extreme}", "copilot.reasoning_effort")]
     [InlineData("copilot: {command: \" \"}", "copilot.command")]
     [InlineData("copilot: {model_by_state: {Todo: \"\"}}", "copilot.model_by_state.Todo")]
+    [InlineData("copilot: {max_ai_credits: 10}", "copilot.max_ai_credits")]
+    [InlineData("copilot: {session_retention_days: -1}", "copilot.session_retention_days")]
     public void Bad_copilot_settings_are_config_errors(string yaml, string field)
     {
         using var tmp = new TempWorkflow("tracker: {kind: fake}");
