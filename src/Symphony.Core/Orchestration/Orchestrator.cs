@@ -507,15 +507,16 @@ public sealed class Orchestrator
 
     private void ReconcileStalled(ServiceConfig config)
     {
-        var stallMs = config.RunnerSettings.StallTimeoutMs;
-        if (stallMs <= 0)
-        {
-            return;
-        }
-
         var now = _time.GetUtcNow();
         foreach (var entry in _running.Values.Where(e => e.Stop is null))
         {
+            // Each session by its own runner's stall_timeout_ms; <= 0 turns detection off for that runner.
+            var stallMs = config.SettingsFor(entry.Runner).StallTimeoutMs;
+            if (stallMs <= 0)
+            {
+                continue;
+            }
+
             var since = entry.LastEventAt ?? entry.StartedAt;
             if ((now - since).TotalMilliseconds > stallMs)
             {
@@ -623,7 +624,7 @@ public sealed class Orchestrator
     /// the same runner and model. A session that keeps ending without moving the issue gets a fresh start instead.
     /// </summary>
     private static string? ResumeFor(IssueTrack track, Issue issue, ServiceConfig config, AgentRoute route) =>
-        config.RunnerSettings.ResumeSessions
+        config.SettingsFor(route.Runner).ResumeSessions
         && track.ResumeSessionId is { } id
         && track.ResumeState == StateNames.Normalize(issue.State)
         && AgentRunners.Normalize(track.ResumeRunner) == route.Runner

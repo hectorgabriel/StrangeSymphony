@@ -109,7 +109,8 @@ public sealed record GateMetrics(
     double AvgSeconds,
     IReadOnlyDictionary<string, int> RejectionsByCategory);
 
-public sealed record ModelMetrics(string Model, int Runs, long InputTokens, long OutputTokens, long TotalTokens, double AgentSeconds);
+/// <summary>Runs of one model on one runner; <see cref="Runner"/> is <c>claude</c> for lines written before runners existed.</summary>
+public sealed record ModelMetrics(string Model, int Runs, long InputTokens, long OutputTokens, long TotalTokens, double AgentSeconds, string Runner = Agents.AgentRunners.Claude);
 
 public sealed record DayMetrics(string Day, int Runs, int ClosedIssues, long TotalTokens, double AgentSeconds);
 
@@ -424,8 +425,8 @@ public sealed class MetricsLog(ILogger logger)
                 g.GroupBy(r => r.Model ?? DefaultModel).ToDictionary(m => m.Key, m => m.Sum(r => r.TotalTokens)));
         }).OrderByDescending(s => s.TotalTokens).ToList();
 
-        var byModel = runs.GroupBy(r => r.Model ?? DefaultModel)
-            .Select(g => new ModelMetrics(g.Key, g.Count(), g.Sum(r => r.InputTokens), g.Sum(r => r.OutputTokens), g.Sum(r => r.TotalTokens), Round(g.Sum(r => r.Seconds))))
+        var byModel = runs.GroupBy(r => (Runner: Agents.AgentRunners.Normalize(r.Runner), Model: r.Model ?? DefaultModel))
+            .Select(g => new ModelMetrics(g.Key.Model, g.Count(), g.Sum(r => r.InputTokens), g.Sum(r => r.OutputTokens), g.Sum(r => r.TotalTokens), Round(g.Sum(r => r.Seconds)), g.Key.Runner))
             .OrderByDescending(m => m.TotalTokens).ToList();
 
         var today = Day(now, zone);

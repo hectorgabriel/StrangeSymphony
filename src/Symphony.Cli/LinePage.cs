@@ -64,7 +64,7 @@ internal static class LinePage
   <section><h2>By status</h2><p>Agent time and tokens for each status an agent worked in. Rework is a stage that ran again after it had been handed off.</p><div id="states"></div></section>
   <section><h2>Verification gates</h2><p>Symphony's checks before an agent may move a task to each status. A hand-off is one attempt to get a task past the gate; first try means its first check passed.</p><div id="gates"></div></section>
   <section><h2>Why work goes back</h2><p>A loop is an agent sending a task back, such as the tester moving it to Con Defectos, with the defects it found by category and severity. Triage is the wait until the next agent run. Rework is what the loop cost: the runs that repeated a stage until the task got past the tester again. Rework no report explains was a person sending the task back, for example from review.</p><dl class="tiles" id="rework-tiles"></dl><div id="categories"></div><h3>Whose work went back</h3><div id="sources"></div><h3>Recent loops</h3><div id="loops"></div></section>
-  <section><h2>By model</h2><p>Where the tokens went.</p><div id="models"></div></section>
+  <section><h2>By agent and model</h2><p>Where the tokens went.</p><div id="models"></div></section>
   <section><h2>Last 14 days</h2><p>Runs finished, tasks closed and tokens used per day.</p><div id="days"></div></section>
   <section><h2>Tasks</h2><p>The 50 most recently active tasks. Cycle time runs from the first agent run to the terminal status.</p><div id="issues"></div></section>
 </main>
@@ -145,7 +145,7 @@ async function load() {
         ['Rework', r => r.rework_runs ? `${fmt(r.rework_runs)} runs · ${short(r.rework_tokens)}` : '–']], w.recent, 'No loops yet.'));
     }
     $('models').replaceChildren(table([
-      ['Model', r => r.model], ['Runs', r => fmt(r.runs)], ['Agent time', r => dur(r.agent_seconds)], ['Input', r => short(r.input_tokens)], ['Output', r => short(r.output_tokens)],
+      ['Agent', r => ({ claude: 'Claude Code', copilot: 'GitHub Copilot' })[r.runner] ?? r.runner], ['Model', r => r.model], ['Runs', r => fmt(r.runs)], ['Agent time', r => dur(r.agent_seconds)], ['Input', r => short(r.input_tokens)], ['Output', r => short(r.output_tokens)],
       ['Tokens', r => short(r.total_tokens), r => r.total_tokens]], m.by_model, 'No finished runs yet.'));
     $('days').replaceChildren(table([
       ['Day', r => r.day], ['Runs', r => fmt(r.runs)], ['Closed', r => fmt(r.closed_issues)], ['Agent time', r => dur(r.agent_seconds)], ['Tokens', r => short(r.total_tokens), r => r.total_tokens]], m.by_day, ''));

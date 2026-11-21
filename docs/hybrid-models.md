@@ -72,6 +72,10 @@ Claude Code also makes small background calls with its fast model. Those calls g
 
 With `ANTHROPIC_BASE_URL` set, Claude Code doesn't use your Pro, Max or Team login. **Claude traffic is billed to the `ANTHROPIC_API_KEY` the proxy holds.** This is the "API key mode" in [IMPLEMENTATION.md](IMPLEMENTATION.md#authentication-and-accounts). It suits a shared or central host. If you'd rather keep a subscription login for the Claude statuses, run a second Symphony instance without the proxy variables for those statuses.
 
+## Another agent per status
+
+`agent.runner_by_state` goes one step further and runs a status on a different agent, such as GitHub Copilot CLI, each with its own models. See [copilot.md](copilot.md#9-mix-runners-by-status).
+
 ## Inside one task
 
 Role agents in `.claude/agents/*.md` can set `model:` in their frontmatter. Behind the proxy, those subagents follow the same routing, so a Claude session can hand a subtask to the hosted model, or the other way round.

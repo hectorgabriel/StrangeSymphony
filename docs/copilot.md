@@ -29,7 +29,7 @@ copilot:
   stall_timeout_ms: 1200000
 ```
 
-The `claude` section stays as it is and is ignored while the runner is `copilot`.
+The `claude` section stays as it is and is ignored while no status runs on Claude. To run only some statuses on Copilot, see section 9.
 
 ## 2. Settings (`copilot`)
 
@@ -102,3 +102,26 @@ SYMPHONY_REAL_COPILOT=1 dotnet test --filter RealCopilot
 ```
 
 This runs two turns against the installed CLI with your login: one calls the tracker tool through Symphony's MCP gateway, the other writes a file in a resumed run. It spends a few AI credits.
+
+## 9. Mix runners by status
+
+`agent.runner_by_state` runs some statuses on another runner. Keys are tracker statuses, matched like `active_states`; values are `claude` or `copilot`. Statuses not listed use `agent.runner`.
+
+```yaml
+agent:
+  runner: claude
+  runner_by_state:
+    Plan Aprobado: copilot        # development on Copilot, everything else on Claude
+
+claude:
+  model: claude-opus-5.5
+copilot:
+  model: claude-sonnet-5.5
+  stall_timeout_ms: 1200000
+```
+
+- Each status uses its runner's section: its `model` and `model_by_state`, `stall_timeout_ms` and `resume`.
+- **A session keeps its runner.** When a task moves to a status on another runner, the worker ends the session after the current turn, and the next dispatch starts a new session on the other runner with the full prompt, as for a model change. A session is never resumed on another runner.
+- A runner name that isn't `claude` or `copilot` is a config error; a status that isn't active gets a startup warning.
+- Gate and pull request warnings use the shortest `stall_timeout_ms` of the runners in use.
+- `/line` shows the Agent next to each model, and the dashboard names the agent working on each card.

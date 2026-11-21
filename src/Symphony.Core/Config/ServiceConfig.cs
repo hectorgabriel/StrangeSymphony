@@ -25,7 +25,18 @@ public sealed record AgentSettings(
     IReadOnlyDictionary<string, int> MaxConcurrentAgentsByState,
     int MaxFastContinuations,
     // Extension, agent.runner: the coding agent sessions run with (Agents.AgentRunners).
-    string Runner = Agents.AgentRunners.Claude);
+    string Runner = Agents.AgentRunners.Claude,
+    // Extension, agent.runner_by_state: normalized state name -> runner, overriding Runner in that state.
+    IReadOnlyDictionary<string, string>? RunnerByState = null)
+{
+    /// <summary>The runner a session for an issue in <paramref name="state"/> runs with.</summary>
+    public string RunnerFor(string? state) =>
+        RunnerByState is not null && RunnerByState.TryGetValue(StateNames.Normalize(state), out var runner) ? runner : Runner;
+
+    /// <summary>The default runner and every runner a state is routed to.</summary>
+    public IReadOnlyList<string> RunnersInUse =>
+        [.. new[] { Runner }.Concat(RunnerByState?.Values ?? []).Distinct(StringComparer.Ordinal)];
+}
 
 /// <summary>What the orchestrator needs from any runner's section, whichever agent it configures.</summary>
 public interface IRunnerSettings
@@ -178,16 +189,26 @@ public sealed record ServiceConfig(
 {
     public BudgetSettings Budgets => Budget ?? BudgetSettings.None;
 
-    /// <summary>The section of the runner in <c>agent.runner</c>.</summary>
-    public IRunnerSettings RunnerSettings => Agent.Runner switch
+    /// <summary>The section of the default runner (<c>agent.runner</c>).</summary>
+    public IRunnerSettings RunnerSettings => SettingsFor(Agent.Runner);
+
+    /// <summary>The section that configures <paramref name="runner"/>.</summary>
+    public IRunnerSettings SettingsFor(string runner) => runner switch
     {
         Agents.AgentRunners.Claude => Claude,
-        Agents.AgentRunners.Copilot => Copilot ?? throw new InvalidOperationException("agent.runner is copilot but the copilot section was not built"),
-        var runner => throw new InvalidOperationException($"agent.runner '{runner}' is not supported"),
+        Agents.AgentRunners.Copilot => Copilot ?? throw new InvalidOperationException("the copilot section was not built"),
+        _ => throw new InvalidOperationException($"agent runner '{runner}' is not supported"),
     };
 
-    /// <summary>The runner and model a session for an issue in <paramref name="state"/> starts with.</summary>
-    public Agents.AgentRoute RouteFor(string? state) => new(Agent.Runner, RunnerSettings.ModelFor(state));
+    /// <summary>
+    /// The runner and model a session for an issue in <paramref name="state"/> starts with: the state's runner
+    /// (<c>agent.runner_by_state</c>, else <c>agent.runner</c>), and that runner's model for the state.
+    /// </summary>
+    public Agents.AgentRoute RouteFor(string? state)
+    {
+        var runner = Agent.RunnerFor(state);
+        return new(runner, SettingsFor(runner).ModelFor(state));
+    }
 
     /// <summary>The audit trail's file (docs/audit-trail.md).</summary>
     public string AuditFile => AuditPath ?? Audit.AuditLog.DefaultPathFor(WorkspaceRoot);

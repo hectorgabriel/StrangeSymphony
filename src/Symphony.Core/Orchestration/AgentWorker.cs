@@ -205,7 +205,7 @@ public sealed class AgentWorker(
                 // continuation dispatch then starts a fresh session with that state's route and prompt.
                 if (config.RouteFor(issue.State) != route)
                 {
-                    logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=model_changed state={State}", issue.Id, issue.Identifier, issue.State);
+                    logger.LogInformation("action=worker outcome=stopping issue_id={IssueId} issue_identifier={IssueIdentifier} reason=route_changed state={State}", issue.Id, issue.Identifier, issue.State);
                     return;
                 }
 
