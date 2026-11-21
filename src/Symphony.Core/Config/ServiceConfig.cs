@@ -106,8 +106,14 @@ public sealed record CopilotSettings(
     IReadOnlyList<string> ExtraArgs,
     int TurnTimeoutMs,
     int StallTimeoutMs,
-    bool Resume = true) : IRunnerSettings
+    bool Resume = true,
+    // --max-ai-credits for each session (Copilot's soft cap, at least 30); null means no cap.
+    int? MaxAiCredits = null,
+    // Sessions in Symphony's own agent home unused for this many days are deleted; 0 keeps them. Not applied to a configured home.
+    int SessionRetentionDays = 14) : IRunnerSettings
 {
+    public const int MinAiCredits = 30;
+
     public static readonly IReadOnlyList<string> ReasoningEfforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
     public string? ModelFor(string? state) =>

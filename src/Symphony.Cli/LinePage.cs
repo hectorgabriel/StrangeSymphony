@@ -107,6 +107,7 @@ async function load() {
       tile('Runs', fmt(t.runs), `${fmt(t.resumed_runs)} resumed a session`),
       tile('Agent time', dur(t.agent_seconds)),
       tile('Tokens', short(t.total_tokens), `${short(t.input_tokens)} in · ${short(t.output_tokens)} out`),
+      ...(t.ai_credits ? [tile('AI credits', fmt(t.ai_credits), 'GitHub Copilot runs')] : []),
       tile('Failed runs', pct(t.failed_runs, t.runs), `${fmt(t.failed_runs)} of ${fmt(t.runs)}`),
       tile('Rework', pct(t.rework_runs, t.runs), `${fmt(t.rework_runs)} runs`),
       tile('Avg cycle time', dur(t.avg_cycle_seconds), 'first run to closed'),
@@ -146,7 +147,7 @@ async function load() {
     }
     $('models').replaceChildren(table([
       ['Agent', r => ({ claude: 'Claude Code', copilot: 'GitHub Copilot' })[r.runner] ?? r.runner], ['Model', r => r.model], ['Runs', r => fmt(r.runs)], ['Agent time', r => dur(r.agent_seconds)], ['Input', r => short(r.input_tokens)], ['Output', r => short(r.output_tokens)],
-      ['Tokens', r => short(r.total_tokens), r => r.total_tokens]], m.by_model, 'No finished runs yet.'));
+      ['Tokens', r => short(r.total_tokens), r => r.total_tokens], ['AI credits', r => r.ai_credits ? fmt(r.ai_credits) : '–']], m.by_model, 'No finished runs yet.'));
     $('days').replaceChildren(table([
       ['Day', r => r.day], ['Runs', r => fmt(r.runs)], ['Closed', r => fmt(r.closed_issues)], ['Agent time', r => dur(r.agent_seconds)], ['Tokens', r => short(r.total_tokens), r => r.total_tokens]], m.by_day, ''));
     $('issues').replaceChildren(table([

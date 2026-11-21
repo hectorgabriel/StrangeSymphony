@@ -41,6 +41,12 @@ public static class CopilotCommandLine
             args.Add($"--model={model}");
         }
 
+        if (settings.MaxAiCredits is { } credits)
+        {
+            // Copilot's own cap for the session; the workflow's token budgets still apply on top.
+            args.Add($"--max-ai-credits={credits}");
+        }
+
         if (settings.ReasoningEffort is { } effort)
         {
             args.Add($"--reasoning-effort={effort}");

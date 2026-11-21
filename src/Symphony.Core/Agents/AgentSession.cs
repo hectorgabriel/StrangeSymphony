@@ -5,8 +5,11 @@ using Symphony.Core.Tracker;
 
 namespace Symphony.Core.Agents;
 
-/// <summary>Absolute (cumulative) token totals for the current agent session.</summary>
-public sealed record TokenTotals(long InputTokens, long OutputTokens, long TotalTokens);
+/// <summary>
+/// Absolute (cumulative) token totals for the current agent session. <see cref="NanoAiu"/> is GitHub Copilot's
+/// billed usage (10^9 nano AIU = 1 AI credit); runners that don't report credits leave it 0.
+/// </summary>
+public sealed record TokenTotals(long InputTokens, long OutputTokens, long TotalTokens, long NanoAiu = 0);
 
 /// <summary>Structured runtime event emitted by the agent client to the orchestrator (SPEC 10.4).</summary>
 public sealed record AgentEvent(string Event, DateTimeOffset Timestamp)

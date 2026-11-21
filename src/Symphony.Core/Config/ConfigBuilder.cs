@@ -309,6 +309,9 @@ public sealed partial class ConfigBuilder(
         }
 
         var home = NullIfBlank(String(section, "copilot.home", "home"));
+        int? maxCredits = section.ContainsKey("max_ai_credits") && section["max_ai_credits"] is not null
+            ? Int(section, "copilot.max_ai_credits", "max_ai_credits", 0, min: CopilotSettings.MinAiCredits)
+            : null;
         return new CopilotSettings(
             command,
             NullIfBlank(String(section, "copilot.model", "model")),
@@ -322,7 +325,9 @@ public sealed partial class ConfigBuilder(
             StringList(section, "copilot.extra_args", "extra_args") ?? [],
             Int(section, "copilot.turn_timeout_ms", "turn_timeout_ms", 3600000, min: 1),
             Int(section, "copilot.stall_timeout_ms", "stall_timeout_ms", 300000, min: int.MinValue),
-            Bool(section, "copilot.resume", "resume", true));
+            Bool(section, "copilot.resume", "resume", true),
+            maxCredits,
+            Int(section, "copilot.session_retention_days", "session_retention_days", 14, min: 0));
     }
 
     /// <summary>The runner's stall timeout and the front matter field that sets it, for warnings.</summary>
